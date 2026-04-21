@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx expo:*)",
+      "Bash(mkdir -p \"/c/Users/pat/Documents/Claude/Projects/Speed Limit/assets\")",
+      "Bash(node -e \":*)",
+      "Bash(ipconfig)",
+      "Bash(npm install:*)",
+      "Bash(node generate-assets.js)",
+      "Bash(npx eas-cli:*)"
+    ]
+  }
+}
