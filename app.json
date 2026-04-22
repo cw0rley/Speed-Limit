@@ -21,8 +21,10 @@
         "NSLocationWhenInUseUsageDescription": "Speed Limit uses your location to show your current driving speed and the speed limit of the road you're on.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Speed Limit uses your location to show your current driving speed and the speed limit of the road you're on.",
         "UIBackgroundModes": [
+          "location",
           "location"
-        ]
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
