@@ -8,13 +8,13 @@ import {
   Platform,
   Switch,
   useWindowDimensions,
+  AppState,
 } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
-import { AppState } from 'react-native';
 
 const BACKGROUND_LOCATION_TASK = 'background-location-task';
 
@@ -336,8 +336,6 @@ export default function App() {
     }
     lastOverRef.current = isOver;
   }, [isOver]);
-
-  const bgColor = isOver ? '#8a0f10' : '#0b0d12';
 
   const sourceLabel = limit
     ? (limit.source === 'here' ? 'Limit Data: HERE' : 'Limit Data: OpenStreetMap')
