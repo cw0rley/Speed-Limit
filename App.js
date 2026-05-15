@@ -7,27 +7,13 @@ import {
   ActivityIndicator,
   Platform,
   Switch,
+  Linking,
   useWindowDimensions,
-  AppState,
 } from 'react-native';
 import * as Location from 'expo-location';
-import * as TaskManager from 'expo-task-manager';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
-
-const BACKGROUND_LOCATION_TASK = 'background-location-task';
-
-// Background location handler — receives updates even when the app is backgrounded.
-// We store the latest location in a module-level variable so the foreground component
-// can pick it up when the app returns.
-let _bgLocation = null;
-TaskManager.defineTask(BACKGROUND_LOCATION_TASK, ({ data, error }) => {
-  if (error) return;
-  if (data && data.locations && data.locations.length > 0) {
-    _bgLocation = data.locations[data.locations.length - 1];
-  }
-});
 
 // ---- Unit conversions ----
 const MPS_TO_MPH = 2.2369362921;
@@ -46,7 +32,7 @@ const HERE_API_KEY = '6jTbJVWZkUP4tAtJ-mVBeS24nhj-vs_UD0XVkOK44y4';
 // Set this to your deployed Cloudflare Worker URL to proxy HERE API requests
 // (keeps the API key server-side). Leave null to call HERE directly (local dev).
 // Example: 'https://speed-limit-proxy.your-subdomain.workers.dev'
-const PROXY_URL = null;
+const PROXY_URL = 'https://speed-limit-proxy.speed-limit-proxy.workers.dev';
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
@@ -204,33 +190,31 @@ export default function App() {
   const lastQueriedRef = useRef({ lat: null, lon: null, t: 0 });
   const abortRef = useRef(null);
   const lastOverRef = useRef(false);
-  const smoothedSpeedRef = useRef(0); // EMA smoothed speed (m/s)
-
-  const handleLocation = useCallback((loc) => {
-    const s = loc.coords.speed;
-    const raw = s != null && s >= 0 ? s : 0;
-    const EMA_ALPHA = 0.3;
-    let smoothed;
-    if (raw < 0.5) {
-      smoothed = 0;
-    } else {
-      smoothed = EMA_ALPHA * raw + (1 - EMA_ALPHA) * smoothedSpeedRef.current;
-    }
-    smoothedSpeedRef.current = smoothed;
-    setSpeedMps(smoothed);
-    setAccuracyMps(loc.coords.accuracy != null ? loc.coords.accuracy : null);
-
-    const { latitude, longitude } = loc.coords;
-    maybeFetchLimit(latitude, longitude);
-  }, []);
 
   // Request permission + start streaming location
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
+        // Check existing status first — on iOS a prior denial means we must
+        // send the user to Settings instead of calling request again (which
+        // would silently return 'denied' without showing a prompt).
+        const existing = await Location.getForegroundPermissionsAsync();
         if (cancelled) return;
+
+        let status = existing.status;
+        if (status !== 'granted') {
+          if (existing.canAskAgain === false) {
+            // User previously denied and the OS won't show the prompt again
+            setPermStatus('denied');
+            setErrorMsg('Location permission was denied. Enable it in Settings to use this app.');
+            return;
+          }
+          const result = await Location.requestForegroundPermissionsAsync();
+          if (cancelled) return;
+          status = result.status;
+        }
+
         if (status !== 'granted') {
           setPermStatus('denied');
           setErrorMsg('Location permission was denied. Enable it in Settings to use this app.');
@@ -238,31 +222,21 @@ export default function App() {
         }
         setPermStatus('granted');
 
-        // Request background permission (user can decline — foreground still works)
-        const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
-        if (!cancelled && bgStatus === 'granted') {
-          const isRunning = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
-          if (!isRunning) {
-            await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
-              accuracy: Location.Accuracy.BestForNavigation,
-              timeInterval: 2000,
-              distanceInterval: 5,
-              foregroundService: {
-                notificationTitle: 'Speed Limit',
-                notificationBody: 'Tracking your speed in the background',
-              },
-              showsBackgroundLocationIndicator: true,
-            });
-          }
-        }
-
         const sub = await Location.watchPositionAsync(
           {
             accuracy: Location.Accuracy.BestForNavigation,
             timeInterval: 1000,
             distanceInterval: 1,
           },
-          handleLocation
+          (loc) => {
+            const s = loc.coords.speed;
+            // expo-location returns m/s; can be negative or null if unknown
+            setSpeedMps(s != null && s >= 0 ? s : 0);
+            setAccuracyMps(loc.coords.accuracy != null ? loc.coords.accuracy : null);
+
+            const { latitude, longitude } = loc.coords;
+            maybeFetchLimit(latitude, longitude);
+          }
         );
         subRef.current = sub;
       } catch (e) {
@@ -279,17 +253,6 @@ export default function App() {
       if (abortRef.current) abortRef.current.abort();
     };
   }, []);
-
-  // Pick up background location data when app returns to foreground
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active' && _bgLocation) {
-        handleLocation(_bgLocation);
-        _bgLocation = null;
-      }
-    });
-    return () => subscription.remove();
-  }, [handleLocation]);
 
   // Throttle: query if moved > 40 m or > 15 s since last query.
   const maybeFetchLimit = useCallback(async (lat, lon) => {
@@ -337,12 +300,48 @@ export default function App() {
     lastOverRef.current = isOver;
   }, [isOver]);
 
+  const bgColor = isOver ? '#8a0f10' : '#0b0d12';
+
   const sourceLabel = limit
     ? (limit.source === 'here' ? 'Limit Data: HERE' : 'Limit Data: OpenStreetMap')
     : 'Limit Data: HERE (primary), OpenStreetMap (fallback)';
 
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
+
+  // Waiting for permission — show a loading indicator
+  if (permStatus === 'pending') {
+    return (
+      <View style={[styles.container, { backgroundColor: '#0b0d12', justifyContent: 'center', alignItems: 'center' }]}>
+        <StatusBar style="light" />
+        <ActivityIndicator size="large" color="#fff" style={{ marginBottom: 20 }} />
+        <Text style={{ color: '#aaa', fontSize: 16, textAlign: 'center', paddingHorizontal: 30 }}>
+          Waiting for location permission…
+        </Text>
+      </View>
+    );
+  }
+
+  // Permission denied — show a full-screen message with an Open Settings button
+  if (permStatus === 'denied') {
+    return (
+      <View style={[styles.container, { backgroundColor: '#0b0d12', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 30 }]}>
+        <StatusBar style="light" />
+        <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700', textAlign: 'center', marginBottom: 16 }}>
+          Location Permission Required
+        </Text>
+        <Text style={{ color: '#aaa', fontSize: 15, textAlign: 'center', lineHeight: 22, marginBottom: 30 }}>
+          Speed Limit needs access to your location to show your current speed and the posted speed limit. Please enable location access in Settings.
+        </Text>
+        <TouchableOpacity
+          style={{ backgroundColor: '#2563eb', paddingVertical: 14, paddingHorizontal: 36, borderRadius: 12 }}
+          onPress={() => Linking.openSettings()}
+        >
+          <Text style={{ color: '#fff', fontSize: 17, fontWeight: '600' }}>Open Settings</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { backgroundColor: '#0b0d12' }, isLandscape && styles.containerLandscape]}>
@@ -402,16 +401,12 @@ export default function App() {
           </TouchableOpacity>
 
           <View style={styles.footerCenter}>
-            {errorMsg ? (
-              <Text style={[styles.footerText, !isLandscape && { color: '#c00' }]}>{errorMsg}</Text>
-            ) : (
-              <Text style={[styles.footerText, !isLandscape && { color: '#333' }]}>
-                {accuracyMps != null
-                  ? 'GPS +/- ' + Math.round(accuracyMps) + ' m'
-                  : 'Acquiring GPS...'}
-                {isOver ? '   OVER LIMIT' : ''}
-              </Text>
-            )}
+            <Text style={[styles.footerText, !isLandscape && { color: '#333' }]}>
+              {accuracyMps != null
+                ? 'GPS +/- ' + Math.round(accuracyMps) + ' m'
+                : 'Acquiring GPS...'}
+              {isOver ? '   OVER LIMIT' : ''}
+            </Text>
             <Text style={[styles.footerTextDim, !isLandscape && { color: '#999' }]}>{sourceLabel}</Text>
           </View>
 

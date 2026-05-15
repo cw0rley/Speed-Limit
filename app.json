@@ -15,14 +15,10 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.claytonrugby.speedlimit",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Speed Limit uses your location to show your current driving speed and the speed limit of the road you're on.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "Speed Limit uses your location to show your current driving speed and the speed limit of the road you're on.",
-        "UIBackgroundModes": [
-          "location"
-        ],
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -34,10 +30,7 @@
       },
       "permissions": [
         "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION",
-        "ACCESS_BACKGROUND_LOCATION",
-        "FOREGROUND_SERVICE",
-        "FOREGROUND_SERVICE_LOCATION"
+        "ACCESS_COARSE_LOCATION"
       ]
     },
     "web": {
@@ -47,10 +40,7 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow Speed Limit to use your location to show driving speed and speed limits.",
-          "isIosBackgroundLocationEnabled": true,
-          "isAndroidBackgroundLocationEnabled": true,
-          "isAndroidForegroundServiceEnabled": true
+          "locationWhenInUsePermission": "Allow Speed Limit to use your location to show driving speed and speed limits."
         }
       ]
     ],

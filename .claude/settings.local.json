@@ -7,7 +7,17 @@
       "Bash(ipconfig)",
       "Bash(npm install:*)",
       "Bash(node generate-assets.js)",
-      "Bash(npx eas-cli:*)"
+      "Bash(npx eas-cli:*)",
+      "Bash(where adb:*)",
+      "Bash(where emulator:*)",
+      "Read(//c/Users/pat/Documents/Claude/Projects/Speed Limit/$LOCALAPPDATA/Android/**)",
+      "Read(//c/Users/pat/Documents/Claude/Projects/Speed Limit/$LOCALAPPDATA/Android/Sdk/**)",
+      "Bash(\"$LOCALAPPDATA/Android/Sdk/emulator/emulator.exe\" -list-avds 2>&1)",
+      "Bash(eas build:list --limit 5)",
+      "Bash(gh auth:*)",
+      "Bash(where gh:*)",
+      "Bash(node generate-screenshots.js)",
+      "Bash(node -e \"const sharp = require\\(''sharp''\\); sharp\\(''assets/screenshot-65-portrait.png''\\).metadata\\(\\).then\\(m => console.log\\(m.width + ''x'' + m.height\\)\\);\")"
     ]
   }
 }
