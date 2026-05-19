@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" rx="224" fill="#0b0d12"/>
+
+  <!-- Abstract speed streaks - horizontal lines suggesting motion -->
+  <rect x="80" y="340" width="280" height="5" rx="2" fill="#c0392b" opacity="0.4"/>
+  <rect x="140" y="380" width="200" height="4" rx="2" fill="#c0392b" opacity="0.25"/>
+  <rect x="80" y="490" width="250" height="5" rx="2" fill="#c0392b" opacity="0.35"/>
+  <rect x="120" y="530" width="180" height="4" rx="2" fill="#c0392b" opacity="0.2"/>
+  <rect x="80" y="640" width="300" height="5" rx="2" fill="#c0392b" opacity="0.4"/>
+  <rect x="160" y="680" width="220" height="4" rx="2" fill="#c0392b" opacity="0.25"/>
+
+  <!-- Road/perspective lines converging -->
+  <line x1="900" y1="280" x2="400" y2="460" stroke="#333" stroke-width="3"/>
+  <line x1="900" y1="740" x2="400" y2="560" stroke="#333" stroke-width="3"/>
+
+  <!-- Center circle with number -->
+  <circle cx="580" cy="510" r="200" fill="none" stroke="#c0392b" stroke-width="16"/>
+  <circle cx="580" cy="510" r="180" fill="#0b0d12"/>
+
+  <!-- Speed number -->
+  <text x="580" y="480" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="180" fill="#ffffff">45</text>
+
+  <!-- MPH small text -->
+  <text x="580" y="560" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="48" fill="#666" letter-spacing="6">MPH</text>
+</svg>

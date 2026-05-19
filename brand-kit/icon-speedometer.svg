@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" rx="224" fill="#0b0d12"/>
+
+  <!-- Speedometer arc background -->
+  <path d="M 232 620 A 320 320 0 1 1 792 620" fill="none" stroke="#222" stroke-width="40" stroke-linecap="round"/>
+
+  <!-- Speedometer arc filled (green to red gradient feel - using segments) -->
+  <path d="M 232 620 A 320 320 0 0 1 352 340" fill="none" stroke="#2ecc71" stroke-width="40" stroke-linecap="round"/>
+  <path d="M 352 340 A 320 320 0 0 1 512 300" fill="none" stroke="#f1c40f" stroke-width="40" stroke-linecap="round"/>
+  <path d="M 512 300 A 320 320 0 0 1 672 340" fill="none" stroke="#e67e22" stroke-width="40" stroke-linecap="round"/>
+  <path d="M 672 340 A 320 320 0 0 1 792 620" fill="none" stroke="#c0392b" stroke-width="40" stroke-linecap="round"/>
+
+  <!-- Tick marks -->
+  <line x1="270" y1="590" x2="310" y2="570" stroke="#555" stroke-width="4"/>
+  <line x1="310" y1="420" x2="345" y2="445" stroke="#555" stroke-width="4"/>
+  <line x1="420" y1="320" x2="440" y2="352" stroke="#555" stroke-width="4"/>
+  <line x1="512" y1="300" x2="512" y2="335" stroke="#555" stroke-width="4"/>
+  <line x1="604" y1="320" x2="584" y2="352" stroke="#555" stroke-width="4"/>
+  <line x1="714" y1="420" x2="679" y2="445" stroke="#555" stroke-width="4"/>
+  <line x1="754" y1="590" x2="714" y2="570" stroke="#555" stroke-width="4"/>
+
+  <!-- Needle pointing to ~75% (upper right area) -->
+  <line x1="512" y1="620" x2="700" y2="390" stroke="#c0392b" stroke-width="12" stroke-linecap="round"/>
+
+  <!-- Center hub -->
+  <circle cx="512" cy="620" r="24" fill="#c0392b"/>
+  <circle cx="512" cy="620" r="12" fill="#fff"/>
+
+  <!-- S&L text below -->
+  <text x="512" y="820" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="120" fill="#ffffff">S<tspan fill="#c0392b">&amp;</tspan>L</text>
+</svg>

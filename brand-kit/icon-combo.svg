@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" rx="224" fill="#0b0d12"/>
+
+  <!-- Speedometer half-arc at top -->
+  <path d="M 262 512 A 280 280 0 1 1 762 512" fill="none" stroke="#222" stroke-width="32" stroke-linecap="round"/>
+  <path d="M 262 512 A 280 280 0 0 1 512 232" fill="none" stroke="#ffffff" stroke-width="32" stroke-linecap="round" opacity="0.3"/>
+  <path d="M 512 232 A 280 280 0 0 1 762 512" fill="none" stroke="#c0392b" stroke-width="32" stroke-linecap="round"/>
+
+  <!-- Needle -->
+  <line x1="512" y1="512" x2="680" y2="310" stroke="#c0392b" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="512" cy="512" r="16" fill="#c0392b"/>
+
+  <!-- Large speed number centered -->
+  <text x="512" y="660" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="200" fill="#ffffff">65</text>
+
+  <!-- Subtle red line separator -->
+  <rect x="362" y="690" width="300" height="4" rx="2" fill="#c0392b" opacity="0.6"/>
+
+  <!-- Small limit text -->
+  <text x="512" y="780" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="600" font-size="64" fill="#666" letter-spacing="12">LIMIT</text>
+</svg>

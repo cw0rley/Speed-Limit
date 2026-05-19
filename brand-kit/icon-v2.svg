@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Subtle gradient background -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#141720"/>
+      <stop offset="100%" stop-color="#0b0d12"/>
+    </linearGradient>
+    <!-- Red glow for ampersand -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+
+  <!-- Giant ampersand behind everything -->
+  <text x="512" y="650" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-weight="700" font-size="620" fill="#c0392b" opacity="0.45" filter="url(#glow)">&amp;</text>
+
+  <!-- Decorative top line -->
+  <rect x="212" y="200" width="600" height="3" rx="1.5" fill="#c0392b" opacity="0.5"/>
+
+  <!-- SPEED text -->
+  <text x="512" y="380" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="200" fill="#ffffff" letter-spacing="16">SPEED</text>
+
+  <!-- Thin separator lines around text -->
+  <rect x="312" y="430" width="140" height="2" rx="1" fill="#ffffff" opacity="0.15"/>
+  <rect x="572" y="430" width="140" height="2" rx="1" fill="#ffffff" opacity="0.15"/>
+
+  <!-- Thin separator lines below -->
+  <rect x="312" y="590" width="140" height="2" rx="1" fill="#ffffff" opacity="0.15"/>
+  <rect x="572" y="590" width="140" height="2" rx="1" fill="#ffffff" opacity="0.15"/>
+
+  <!-- LIMIT text -->
+  <text x="512" y="740" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="200" fill="#ffffff" letter-spacing="16">LIMIT</text>
+
+  <!-- Decorative bottom line -->
+  <rect x="212" y="790" width="600" height="3" rx="1.5" fill="#c0392b" opacity="0.5"/>
+
+  <!-- Subtle corner accents -->
+  <rect x="180" y="180" width="40" height="3" rx="1.5" fill="#c0392b" opacity="0.3"/>
+  <rect x="180" y="180" width="3" height="40" rx="1.5" fill="#c0392b" opacity="0.3"/>
+  <rect x="804" y="180" width="40" height="3" rx="1.5" fill="#c0392b" opacity="0.3"/>
+  <rect x="841" y="180" width="3" height="40" rx="1.5" fill="#c0392b" opacity="0.3"/>
+  <rect x="180" y="841" width="40" height="3" rx="1.5" fill="#c0392b" opacity="0.3"/>
+  <rect x="180" y="804" width="3" height="40" rx="1.5" fill="#c0392b" opacity="0.3"/>
+  <rect x="804" y="841" width="40" height="3" rx="1.5" fill="#c0392b" opacity="0.3"/>
+  <rect x="841" y="804" width="3" height="40" rx="1.5" fill="#c0392b" opacity="0.3"/>
+</svg>
