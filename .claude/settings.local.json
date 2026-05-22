@@ -17,7 +17,11 @@
       "Bash(gh auth:*)",
       "Bash(where gh:*)",
       "Bash(node generate-screenshots.js)",
-      "Bash(node -e \"const sharp = require\\(''sharp''\\); sharp\\(''assets/screenshot-65-portrait.png''\\).metadata\\(\\).then\\(m => console.log\\(m.width + ''x'' + m.height\\)\\);\")"
+      "Bash(node -e \"const sharp = require\\(''sharp''\\); sharp\\(''assets/screenshot-65-portrait.png''\\).metadata\\(\\).then\\(m => console.log\\(m.width + ''x'' + m.height\\)\\);\")",
+      "Bash(node generate.js)",
+      "Bash(eas build:*)",
+      "Bash(python3 -c \":*)",
+      "Bash(gh api:*)"
     ]
   }
 }
