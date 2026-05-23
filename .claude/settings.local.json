@@ -21,7 +21,10 @@
       "Bash(node generate.js)",
       "Bash(eas build:*)",
       "Bash(python3 -c \":*)",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+      "Bash(node -e \"const sharp = require\\(''sharp''\\); sharp\\(''assets/icon.png''\\).flatten\\({ background: { r: 20, g: 22, b: 30 } }\\).toFile\\(''assets/icon-fixed.png''\\).then\\(m => { console.log\\(''Done:'', m.width + ''x'' + m.height, ''channels:'', m.channels, ''hasAlpha:'', false\\); const fs = require\\(''fs''\\); fs.renameSync\\(''assets/icon-fixed.png'', ''assets/icon.png''\\); }\\)\")",
+      "Bash(node -e \"const sharp = require\\(''sharp''\\); sharp\\(''assets/icon.png''\\).metadata\\(\\).then\\(m => console.log\\(''icon.png:'', m.channels, ''channels, hasAlpha:'', m.hasAlpha\\)\\)\")",
+      "Bash(eas submit:*)"
     ]
   }
 }
