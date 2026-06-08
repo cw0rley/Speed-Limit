@@ -2,7 +2,7 @@
   "expo": {
     "name": "Speed Limit",
     "slug": "speed-limit",
-    "version": "1.0.1",
+    "version": "1.1.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -19,6 +19,7 @@
       "bundleIdentifier": "com.claytonrugby.speedlimit",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Speed Limit uses your location to show your current driving speed and the speed limit of the road you're on.",
+        "NSMicrophoneUsageDescription": "Speed Limit may use the microphone for voice input on CarPlay.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -42,7 +43,8 @@
         {
           "locationWhenInUsePermission": "Allow Speed Limit to use your location to show driving speed and speed limits."
         }
-      ]
+      ],
+      "./plugins/withCarPlay"
     ],
     "extra": {
       "eas": {

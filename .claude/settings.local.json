@@ -24,7 +24,21 @@
       "Bash(gh api:*)",
       "Bash(node -e \"const sharp = require\\(''sharp''\\); sharp\\(''assets/icon.png''\\).flatten\\({ background: { r: 20, g: 22, b: 30 } }\\).toFile\\(''assets/icon-fixed.png''\\).then\\(m => { console.log\\(''Done:'', m.width + ''x'' + m.height, ''channels:'', m.channels, ''hasAlpha:'', false\\); const fs = require\\(''fs''\\); fs.renameSync\\(''assets/icon-fixed.png'', ''assets/icon.png''\\); }\\)\")",
       "Bash(node -e \"const sharp = require\\(''sharp''\\); sharp\\(''assets/icon.png''\\).metadata\\(\\).then\\(m => console.log\\(''icon.png:'', m.channels, ''channels, hasAlpha:'', m.hasAlpha\\)\\)\")",
-      "Bash(eas submit:*)"
+      "Bash(eas submit:*)",
+      "Bash(eas build:list --platform ios --limit 3)",
+      "WebSearch",
+      "WebFetch(domain:storage.googleapis.com)",
+      "Bash(taskkill //F //IM node.exe)",
+      "Bash(netstat -ano)",
+      "Bash(node -c App.js)",
+      "Bash(npx eas:*)",
+      "Bash(npx patch-package:*)",
+      "WebFetch(domain:expo.dev)",
+      "WebFetch(domain:github.com)",
+      "Bash(npm view:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(npm uninstall:*)",
+      "Bash(ls C:UserspatDocumentsClaudeProjectsSpeed Limitnode_modules@iternioreact-native-auto-play/*.podspec)"
     ]
   }
 }

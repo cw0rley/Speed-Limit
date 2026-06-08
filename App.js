@@ -6,14 +6,29 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Platform,
-  Switch,
   Linking,
   useWindowDimensions,
+  Modal,
+  TextInput,
+  KeyboardAvoidingView,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
-import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { activateKeepAwakeAsync } from 'expo-keep-awake';
 import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
+
+// CarPlay / Android Auto — lazy-require to avoid errors in Expo Go.
+let HybridAutoPlay, AutoPlayInformationTemplate;
+if (Platform.OS === 'ios') {
+  try {
+    const ap = require('@iternio/react-native-auto-play');
+    HybridAutoPlay = ap.HybridAutoPlay;
+    AutoPlayInformationTemplate = ap.InformationTemplate;
+  } catch (_) {
+    // Not available (e.g. Expo Go)
+  }
+}
 
 // ---- Unit conversions ----
 const MPS_TO_MPH = 2.2369362921;
@@ -164,21 +179,43 @@ function convertLimit(limit, displayUnit) {
 
 const KEEP_AWAKE_TAG = 'speed-limit-keep-awake';
 
+const DEFAULT_THRESHOLDS = [
+  { over: 3, color: '#FFD700' },   // yellow
+  { over: 8, color: '#FF8C00' },   // orange
+  { over: 10, color: '#FF0000' },  // red
+];
+const STORAGE_KEY = '@speed_limit_thresholds';
+
 export default function App() {
   const [unit, setUnit] = useState('mph'); // 'mph' | 'kmh'
-  const [keepAwake, setKeepAwake] = useState(true);
 
-  // Keep the screen on while this toggle is enabled.
+  // Always keep screen on
   useEffect(() => {
-    if (keepAwake) {
-      activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
-    } else {
-      try { deactivateKeepAwake(KEEP_AWAKE_TAG); } catch (_) {}
-    }
-    return () => {
-      try { deactivateKeepAwake(KEEP_AWAKE_TAG); } catch (_) {}
-    };
-  }, [keepAwake]);
+    activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
+  }, []);
+
+  const [thresholds, setThresholds] = useState(DEFAULT_THRESHOLDS);
+  const [settingsVisible, setSettingsVisible] = useState(false);
+  const [editThresholds, setEditThresholds] = useState(DEFAULT_THRESHOLDS);
+
+  useEffect(() => {
+    AsyncStorage.getItem(STORAGE_KEY).then((val) => {
+      if (val) {
+        try {
+          const parsed = JSON.parse(val);
+          if (Array.isArray(parsed) && parsed.length === 3) {
+            setThresholds(parsed);
+          }
+        } catch (_) {}
+      }
+    });
+  }, []);
+
+  const saveThresholds = useCallback((t) => {
+    setThresholds(t);
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(t)).catch(() => {});
+  }, []);
+
   const [permStatus, setPermStatus] = useState('pending'); // pending | granted | denied
   const [speedMps, setSpeedMps] = useState(0);
   const [accuracyMps, setAccuracyMps] = useState(null);
@@ -190,6 +227,45 @@ export default function App() {
   const lastQueriedRef = useRef({ lat: null, lon: null, t: 0 });
   const abortRef = useRef(null);
   const lastOverRef = useRef(false);
+
+  // ---- CarPlay ----
+  const carplayTemplateRef = useRef(null);
+  const carplayConnectedRef = useRef(false);
+
+  useEffect(() => {
+    if (!HybridAutoPlay) return;
+
+    const onConnect = () => {
+      carplayConnectedRef.current = true;
+      const tpl = new AutoPlayInformationTemplate({
+        title: { text: 'Speed & Limit' },
+        items: [
+          { title: { text: 'Current Speed' }, detailText: { text: '-- MPH' } },
+          { title: { text: 'Speed Limit' }, detailText: { text: '--' } },
+        ],
+      });
+      carplayTemplateRef.current = tpl;
+      tpl.setRootTemplate();
+    };
+
+    const onDisconnect = () => {
+      carplayConnectedRef.current = false;
+      carplayTemplateRef.current = null;
+    };
+
+    const cleanupConnect = HybridAutoPlay.addListener('didConnect', onConnect);
+    const cleanupDisconnect = HybridAutoPlay.addListener('didDisconnect', onDisconnect);
+
+    // If already connected when component mounts
+    if (HybridAutoPlay.isConnected()) {
+      onConnect();
+    }
+
+    return () => {
+      cleanupConnect();
+      cleanupDisconnect();
+    };
+  }, []);
 
   // Request permission + start streaming location
   useEffect(() => {
@@ -290,6 +366,20 @@ export default function App() {
   const isOver =
     displayLimit != null && currentSpeed > displayLimit + 1; // +1 tolerance
 
+  // Compute speed text color from thresholds
+  const getSpeedColor = () => {
+    if (displayLimit == null) return '#fff';
+    const overBy = Math.round(currentSpeed) - displayLimit;
+    if (overBy <= 0) return '#fff';
+    // Sort thresholds descending so we match the highest applicable one
+    const sorted = [...thresholds].sort((a, b) => b.over - a.over);
+    for (const t of sorted) {
+      if (overBy >= t.over) return t.color;
+    }
+    return '#fff';
+  };
+  const speedColor = getSpeedColor();
+
   // Haptic feedback on crossing the limit
   useEffect(() => {
     if (isOver && !lastOverRef.current) {
@@ -300,7 +390,24 @@ export default function App() {
     lastOverRef.current = isOver;
   }, [isOver]);
 
-  const bgColor = isOver ? '#8a0f10' : '#0b0d12';
+  // Update CarPlay display when speed, limit, or unit changes
+  useEffect(() => {
+    if (!carplayTemplateRef.current) return;
+    const unitLabel = unit === 'mph' ? 'MPH' : 'KM/H';
+    const speedText = permStatus === 'granted'
+      ? `${Math.round(currentSpeed)} ${unitLabel}`
+      : `-- ${unitLabel}`;
+    const limitText = displayLimit != null
+      ? `${displayLimit} ${unitLabel}`
+      : '--';
+
+    carplayTemplateRef.current.updateItems([
+      { title: { text: 'Current Speed' }, detailText: { text: speedText } },
+      { title: { text: 'Speed Limit' }, detailText: { text: limitText } },
+    ]);
+  });
+
+  const bgColor = '#0b0d12';
 
   const sourceLabel = limit
     ? (limit.source === 'here' ? 'Limit Data: HERE' : 'Limit Data: OpenStreetMap')
@@ -351,33 +458,36 @@ export default function App() {
         <View style={styles.landscapeBody}>
           <View style={[styles.landscapeLeftBase, { backgroundColor: '#0b0d12' }]}>
             <Text style={styles.label}>CURRENT SPEED</Text>
-            <Text style={[styles.speedValueLandscape, isOver && { color: '#ff2020' }]}>
+            <Text style={[styles.speedValueLandscape, { color: speedColor }]}>
               {permStatus === 'granted' ? Math.round(currentSpeed) : '--'}
             </Text>
           </View>
 
           <View style={styles.landscapeRight}>
-            <Text style={[styles.label, { color: '#666' }]}>SPEED LIMIT</Text>
-            {limitLoading && displayLimit == null ? (
-              <ActivityIndicator color="#000" size="large" />
-            ) : (
-              <Text style={styles.limitValueLandscape}>
-                {displayLimit != null ? displayLimit : '--'}
-              </Text>
-            )}
+            <View style={styles.landscapeSignBorder}>
+              <Text style={[styles.label, { color: '#666' }]}>SPEED LIMIT</Text>
+              {limitLoading && displayLimit == null ? (
+                <ActivityIndicator color="#000" size="large" />
+              ) : (
+                <Text style={styles.limitValueLandscape}>
+                  {displayLimit != null ? displayLimit : '--'}
+                </Text>
+              )}
+            </View>
           </View>
         </View>
       ) : (
         <>
           <View style={[styles.centerBlock, { backgroundColor: '#0b0d12' }]}>
             <Text style={styles.label}>CURRENT SPEED</Text>
-            <Text style={[styles.speedValue, isOver && { color: '#ff2020' }]}>
+            <Text style={[styles.speedValue, { color: speedColor }]}>
               {permStatus === 'granted' ? Math.round(currentSpeed) : '--'}
             </Text>
           </View>
 
-          <View style={[styles.limitBlock, styles.limitBlockWhite]}>
-            <Text style={[styles.label, { color: '#666' }]}>SPEED LIMIT</Text>
+          <View style={styles.limitBlockWhite}>
+            <View style={styles.signBorder}>
+              <Text style={[styles.label, { color: '#666' }]}>SPEED LIMIT</Text>
             {limitLoading && displayLimit == null ? (
               <ActivityIndicator color="#000" size="large" />
             ) : (
@@ -385,11 +495,12 @@ export default function App() {
                 {displayLimit != null ? displayLimit : '--'}
               </Text>
             )}
+            </View>
           </View>
         </>
       )}
 
-      <View style={[styles.footer, !isLandscape && { backgroundColor: '#fff', paddingHorizontal: 20 }]}>
+      <View style={[styles.footer, isLandscape && styles.footerLandscape, !isLandscape && { backgroundColor: '#fff', paddingHorizontal: 20 }]}>
         <View style={styles.footerRow}>
           <TouchableOpacity
             style={[styles.unitBtn, !isLandscape && styles.unitBtnLight]}
@@ -405,17 +516,80 @@ export default function App() {
               {accuracyMps != null
                 ? 'GPS +/- ' + Math.round(accuracyMps) + ' m'
                 : 'Acquiring GPS...'}
-              {isOver ? '   OVER LIMIT' : ''}
             </Text>
             <Text style={[styles.footerTextDim, !isLandscape && { color: '#999' }]}>{sourceLabel}</Text>
           </View>
 
-          <View style={[styles.keepAwakeRow, !isLandscape && styles.keepAwakeCol]}>
-            <Text style={[styles.smallLabel, !isLandscape && { color: '#666' }]}>Screen on</Text>
-            <Switch value={keepAwake} onValueChange={setKeepAwake} />
-          </View>
+          <TouchableOpacity
+            onPress={() => {
+              setEditThresholds([...thresholds]);
+              setSettingsVisible(true);
+            }}
+          >
+            <Text style={[styles.gearText, !isLandscape && { color: '#000' }]}>
+              {'\u2699'}
+            </Text>
+          </TouchableOpacity>
         </View>
       </View>
+
+      <Modal
+        visible={settingsVisible}
+        animationType="slide"
+        transparent={true}
+        supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
+        onRequestClose={() => setSettingsVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Speed Alert Thresholds</Text>
+            <Text style={styles.modalSubtitle}>
+              {unit === 'mph' ? 'MPH' : 'KM/H'} over the limit
+            </Text>
+
+            {editThresholds.map((t, i) => (
+              <View key={i} style={styles.thresholdRow}>
+                <View style={[styles.colorSwatch, { backgroundColor: t.color }]} />
+                <Text style={styles.thresholdLabel}>+</Text>
+                <TextInput
+                  style={styles.thresholdInput}
+                  keyboardType="number-pad"
+                  value={String(t.over)}
+                  onChangeText={(val) => {
+                    const num = parseInt(val, 10);
+                    const updated = [...editThresholds];
+                    updated[i] = { ...updated[i], over: isNaN(num) ? 0 : num };
+                    setEditThresholds(updated);
+                  }}
+                />
+                <Text style={styles.thresholdLabel}>{unit === 'mph' ? 'MPH' : 'KM/H'} over</Text>
+              </View>
+            ))}
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: '#666' }]}
+                onPress={() => setSettingsVisible(false)}
+              >
+                <Text style={styles.modalBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: '#2563eb' }]}
+                onPress={() => {
+                  const sorted = [...editThresholds].sort((a, b) => a.over - b.over);
+                  saveThresholds(sorted);
+                  setSettingsVisible(false);
+                }}
+              >
+                <Text style={styles.modalBtnText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -441,38 +615,27 @@ const styles = StyleSheet.create({
     borderColor: '#000',
   },
   unitBtn: {
-    borderWidth: 2,
+    borderWidth: 1.5,
     borderColor: '#fff',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 10,
+    paddingVertical: 5,
+    paddingHorizontal: 12,
+    borderRadius: 8,
   },
   unitBtnText: {
     color: '#fff',
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: '700',
     textAlign: 'center',
+  },
+  gearText: {
+    color: '#ccc',
+    fontSize: 22,
   },
   unitBtnSub: {
     color: '#aaa',
     fontSize: 10,
     textAlign: 'center',
     marginTop: 2,
-  },
-  keepAwakeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  keepAwakeCol: {
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: 4,
-  },
-  smallLabel: {
-    color: '#ccc',
-    fontSize: 12,
-    marginRight: 6,
   },
   centerBlock: {
     flex: 1,
@@ -493,27 +656,39 @@ const styles = StyleSheet.create({
     lineHeight: 160,
     includeFontPadding: false,
   },
-  limitBlock: {
-    alignItems: 'center',
-    marginBottom: 0,
-  },
   limitBlockWhite: {
     flex: 1,
     backgroundColor: '#fff',
     justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  signBorder: {
+    borderWidth: 4,
+    borderColor: '#000',
+    borderRadius: 8,
+    paddingVertical: 8,
     paddingHorizontal: 20,
-    paddingBottom: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+    width: '100%',
   },
   limitValuePlain: {
     color: '#000',
-    fontSize: 160,
+    fontSize: 140,
     fontWeight: '800',
-    lineHeight: 160,
+    lineHeight: 140,
     includeFontPadding: false,
   },
   footer: {
     paddingTop: 10,
     paddingBottom: Platform.OS === 'ios' ? 30 : 16,
+  },
+  footerLandscape: {
+    paddingTop: 6,
+    paddingBottom: 6,
+    paddingHorizontal: 16,
   },
   footerText: {
     color: '#ddd',
@@ -538,7 +713,7 @@ const styles = StyleSheet.create({
   landscapeBody: {
     flex: 1,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'stretch',
     justifyContent: 'center',
   },
   landscapeLeftBase: {
@@ -553,6 +728,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     alignSelf: 'stretch',
     backgroundColor: '#fff',
+    padding: 16,
+    borderLeftWidth: 2,
+    borderLeftColor: '#ccc',
+  },
+  landscapeSignBorder: {
+    borderWidth: 4,
+    borderColor: '#000',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+    width: '100%',
   },
   speedValueLandscape: {
     color: '#fff',
@@ -567,5 +756,74 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     lineHeight: 120,
     includeFontPadding: false,
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  modalContent: {
+    backgroundColor: '#1a1d24',
+    borderRadius: 16,
+    padding: 24,
+    width: '85%',
+    maxWidth: 400,
+    alignItems: 'center',
+  },
+  modalTitle: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  modalSubtitle: {
+    color: '#999',
+    fontSize: 13,
+    marginBottom: 20,
+  },
+  thresholdRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 14,
+    gap: 8,
+  },
+  colorSwatch: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#555',
+  },
+  thresholdLabel: {
+    color: '#ccc',
+    fontSize: 16,
+  },
+  thresholdInput: {
+    backgroundColor: '#2a2d34',
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
+    width: 50,
+    textAlign: 'center',
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#444',
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 16,
+  },
+  modalBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 28,
+    borderRadius: 10,
+  },
+  modalBtnText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
