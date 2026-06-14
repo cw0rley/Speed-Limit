@@ -231,6 +231,7 @@ export default function App() {
   // ---- CarPlay ----
   const carplayTemplateRef = useRef(null);
   const carplayConnectedRef = useRef(false);
+  const carplayLastTextRef = useRef('');
 
   useEffect(() => {
     if (!HybridAutoPlay) return;
@@ -240,17 +241,19 @@ export default function App() {
       const tpl = new AutoPlayInformationTemplate({
         title: { text: 'Speed & Limit' },
         items: [
-          { title: { text: 'Current Speed' }, detailText: { text: '-- MPH' } },
-          { title: { text: 'Speed Limit' }, detailText: { text: '--' } },
+          { type: 'text', title: { text: '-- MPH' }, detailedText: { text: 'Current speed' } },
+          { type: 'text', title: { text: '--' }, detailedText: { text: 'Speed limit' } },
         ],
       });
       carplayTemplateRef.current = tpl;
+      carplayLastTextRef.current = ''; // force the next update to push real values
       tpl.setRootTemplate();
     };
 
     const onDisconnect = () => {
       carplayConnectedRef.current = false;
       carplayTemplateRef.current = null;
+      carplayLastTextRef.current = '';
     };
 
     const cleanupConnect = HybridAutoPlay.addListener('didConnect', onConnect);
@@ -394,16 +397,30 @@ export default function App() {
   useEffect(() => {
     if (!carplayTemplateRef.current) return;
     const unitLabel = unit === 'mph' ? 'MPH' : 'KM/H';
-    const speedText = permStatus === 'granted'
+
+    const hasSpeed = permStatus === 'granted';
+    const speedText = hasSpeed
       ? `${Math.round(currentSpeed)} ${unitLabel}`
       : `-- ${unitLabel}`;
-    const limitText = displayLimit != null
-      ? `${displayLimit} ${unitLabel}`
-      : '--';
+    // CarPlay can't recolor anything, so the over-limit alert has to live in text.
+    const overBy = isOver ? Math.round(currentSpeed) - displayLimit : 0;
+    const speedSubtitle = !hasSpeed
+      ? 'Waiting for GPS'
+      : isOver
+      ? `${overBy} over the limit`
+      : 'Current speed';
+
+    const limitText = displayLimit != null ? `${displayLimit} ${unitLabel}` : 'Unknown';
+
+    // Only push to CarPlay when the displayed text actually changes — the head
+    // unit can't keep up with a per-render refresh and would flicker otherwise.
+    const signature = `${speedText}|${speedSubtitle}|${limitText}`;
+    if (signature === carplayLastTextRef.current) return;
+    carplayLastTextRef.current = signature;
 
     carplayTemplateRef.current.updateItems([
-      { title: { text: 'Current Speed' }, detailText: { text: speedText } },
-      { title: { text: 'Speed Limit' }, detailText: { text: limitText } },
+      { type: 'text', title: { text: speedText }, detailedText: { text: speedSubtitle } },
+      { type: 'text', title: { text: limitText }, detailedText: { text: 'Speed limit' } },
     ]);
   });
 
