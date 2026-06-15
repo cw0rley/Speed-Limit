@@ -10,3 +10,6 @@ npm-debug.*
 *.orig.*
 web-build/
 .DS_Store
+
+# Local-only cut-and-paste content (submission answers, release notes, etc.) - not for git
+cut-paste/
