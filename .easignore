@@ -1,0 +1,36 @@
+# .easignore — controls which files EAS Build uploads.
+# NOTE: when this file exists it OVERRIDES .gitignore for the upload,
+# so everything from .gitignore must be repeated here.
+
+# --- from .gitignore ---
+node_modules/
+.expo/
+dist/
+web-build/
+npm-debug.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+.DS_Store
+cut-paste/
+
+# --- not needed to build the app ---
+.claude/
+brand-kit/
+proxy/
+*.md
+privacy-policy.html
+*.code-workspace
+generate-assets.js
+generate-screenshots.js
+
+# Keep only the asset files app.json references; drop store screenshots,
+# debug images, source art, and the favicon-source svg.
+assets/*
+!assets/icon.png
+!assets/splash.png
+!assets/adaptive-icon.png
+!assets/favicon.png
