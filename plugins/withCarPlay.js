@@ -11,7 +11,8 @@ function withCarPlay(config) {
   });
 
   // 2. Add scene configurations to Info.plist
-  //    react-native-auto-play provides HeadUnitSceneDelegate and WindowApplicationSceneDelegate
+  //    CarPlaySceneDelegate is our custom delegate from modules/carplay-hud.
+  //    WindowApplicationSceneDelegate is provided by react-native-auto-play.
   config = withInfoPlist(config, (c) => {
     c.modResults.UIApplicationSceneManifest = {
       UIApplicationSupportsMultipleScenes: true,
@@ -20,7 +21,7 @@ function withCarPlay(config) {
           {
             UISceneClassName: 'CPTemplateApplicationScene',
             UISceneConfigurationName: 'CarPlayHeadUnit',
-            UISceneDelegateClassName: 'HeadUnitSceneDelegate',
+            UISceneDelegateClassName: 'CarPlaySceneDelegate',
           },
         ],
         UIWindowSceneSessionRoleApplication: [

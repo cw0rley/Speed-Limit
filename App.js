@@ -18,15 +18,15 @@ import { activateKeepAwakeAsync } from 'expo-keep-awake';
 import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
 
-// CarPlay / Android Auto — lazy-require to avoid errors in Expo Go.
-let HybridAutoPlay, AutoPlayInformationTemplate;
+// CarPlay custom HUD — local Expo module. CarPlaySceneDelegate (Swift) handles
+// show/hide; JS only pushes data updates via CarPlayHud.update().
+// Falls back gracefully in Expo Go, Android, or before first native build.
+let CarPlayHud;
 if (Platform.OS === 'ios') {
   try {
-    const ap = require('@iternio/react-native-auto-play');
-    HybridAutoPlay = ap.HybridAutoPlay;
-    AutoPlayInformationTemplate = ap.InformationTemplate;
+    CarPlayHud = require('carplay-hud');
   } catch (_) {
-    // Not available (e.g. Expo Go)
+    // Not available until the native module is built
   }
 }
 
@@ -228,48 +228,6 @@ export default function App() {
   const abortRef = useRef(null);
   const lastOverRef = useRef(false);
 
-  // ---- CarPlay ----
-  const carplayTemplateRef = useRef(null);
-  const carplayConnectedRef = useRef(false);
-  const carplayLastTextRef = useRef('');
-
-  useEffect(() => {
-    if (!HybridAutoPlay) return;
-
-    const onConnect = () => {
-      carplayConnectedRef.current = true;
-      const tpl = new AutoPlayInformationTemplate({
-        title: { text: 'Speed & Limit' },
-        items: [
-          { type: 'text', title: { text: '-- MPH' }, detailedText: { text: 'Current speed' } },
-          { type: 'text', title: { text: '--' }, detailedText: { text: 'Speed limit' } },
-        ],
-      });
-      carplayTemplateRef.current = tpl;
-      carplayLastTextRef.current = ''; // force the next update to push real values
-      tpl.setRootTemplate();
-    };
-
-    const onDisconnect = () => {
-      carplayConnectedRef.current = false;
-      carplayTemplateRef.current = null;
-      carplayLastTextRef.current = '';
-    };
-
-    const cleanupConnect = HybridAutoPlay.addListener('didConnect', onConnect);
-    const cleanupDisconnect = HybridAutoPlay.addListener('didDisconnect', onDisconnect);
-
-    // If already connected when component mounts
-    if (HybridAutoPlay.isConnected()) {
-      onConnect();
-    }
-
-    return () => {
-      cleanupConnect();
-      cleanupDisconnect();
-    };
-  }, []);
-
   // Request permission + start streaming location
   useEffect(() => {
     let cancelled = false;
@@ -393,35 +351,16 @@ export default function App() {
     lastOverRef.current = isOver;
   }, [isOver]);
 
-  // Update CarPlay display when speed, limit, or unit changes
+  // Push data to the CarPlay HUD on every render.
+  // CarPlaySceneDelegate (native) controls show/hide; this just keeps values current.
   useEffect(() => {
-    if (!carplayTemplateRef.current) return;
-    const unitLabel = unit === 'mph' ? 'MPH' : 'KM/H';
-
-    const hasSpeed = permStatus === 'granted';
-    const speedText = hasSpeed
-      ? `${Math.round(currentSpeed)} ${unitLabel}`
-      : `-- ${unitLabel}`;
-    // CarPlay can't recolor anything, so the over-limit alert has to live in text.
-    const overBy = isOver ? Math.round(currentSpeed) - displayLimit : 0;
-    const speedSubtitle = !hasSpeed
-      ? 'Waiting for GPS'
-      : isOver
-      ? `${overBy} over the limit`
-      : 'Current speed';
-
-    const limitText = displayLimit != null ? `${displayLimit} ${unitLabel}` : 'Unknown';
-
-    // Only push to CarPlay when the displayed text actually changes — the head
-    // unit can't keep up with a per-render refresh and would flicker otherwise.
-    const signature = `${speedText}|${speedSubtitle}|${limitText}`;
-    if (signature === carplayLastTextRef.current) return;
-    carplayLastTextRef.current = signature;
-
-    carplayTemplateRef.current.updateItems([
-      { type: 'text', title: { text: speedText }, detailedText: { text: speedSubtitle } },
-      { type: 'text', title: { text: limitText }, detailedText: { text: 'Speed limit' } },
-    ]);
+    if (!CarPlayHud) return;
+    CarPlayHud.update({
+      speed: permStatus === 'granted' ? Math.round(currentSpeed) : -1,
+      speedColor,
+      limit: displayLimit != null ? displayLimit : null,
+      unit,
+    }).catch(() => {});
   });
 
   const bgColor = '#0b0d12';
