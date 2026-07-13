@@ -16,7 +16,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     ) {
         self.interfaceController = interfaceController
         self.carPlayWindow = window
-        setupAndAttach(interfaceController: interfaceController, window: window)
+        connect(interfaceController: interfaceController, window: window)
     }
 
     // MARK: - 2-param fallback
@@ -26,7 +26,6 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         didConnect interfaceController: CPInterfaceController
     ) {
         self.interfaceController = interfaceController
-        // Find window; retry if not ready yet
         findWindowAndAttach(interfaceController: interfaceController, attempt: 0)
     }
 
@@ -43,8 +42,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
     // MARK: - Private
 
-    private func setupAndAttach(interfaceController: CPInterfaceController, window: UIWindow) {
-        // 1. Satisfy CarPlay's template requirement
+    private func connect(interfaceController: CPInterfaceController, window: UIWindow) {
+        // Satisfy CarPlay's template requirement
         let blank = CPInformationTemplate(
             title: "Speed & Limit",
             layout: .leading,
@@ -53,10 +52,13 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         )
         interfaceController.setRootTemplate(blank, animated: false)
 
-        // 2. Wait briefly for the template system to set its rootViewController,
-        //    then replace it with ours. Retry until the module is initialised.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            self?.tryAttach(window: window, attempt: 0)
+        // setRootTemplate causes CarPlay to asynchronously set its own rootViewController,
+        // overwriting ours. We fight back by re-asserting at multiple intervals.
+        tryAttach(window: window, attempt: 0)
+        for delay in [0.3, 0.7, 1.5] as [Double] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                CarPlayHudModule.shared?.reattachIfNeeded(to: window)
+            }
         }
     }
 
@@ -73,7 +75,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             return
         }
         carPlayWindow = w
-        setupAndAttach(interfaceController: interfaceController, window: w)
+        connect(interfaceController: interfaceController, window: w)
     }
 
     private func tryAttach(window: UIWindow, attempt: Int) {

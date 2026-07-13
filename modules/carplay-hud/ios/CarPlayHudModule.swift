@@ -4,6 +4,7 @@ import ExpoModulesCore
 public final class CarPlayHudModule: Module {
   static weak var shared: CarPlayHudModule?
   private(set) var hudView: CarPlayHudView?
+  private weak var hudVC: UIViewController?
 
   public func definition() -> ModuleDefinition {
     Name("CarPlayHud")
@@ -30,29 +31,29 @@ public final class CarPlayHudModule: Module {
   // MARK: - Called from CarPlaySceneDelegate (main queue only)
 
   func attachHUD(to window: UIWindow) {
-    // Replace the window's rootViewController entirely rather than adding a subview.
-    // CarPlay's template system sets its own private rootViewController when
-    // setRootTemplate is called — overriding it here gives us full control of the screen.
-    let hud = CarPlayHudView(frame: window.bounds)
-    hud.translatesAutoresizingMaskIntoConstraints = false
-
     let vc = UIViewController()
-    vc.view.backgroundColor = .black
-    vc.view.addSubview(hud)
-    NSLayoutConstraint.activate([
-      hud.leadingAnchor.constraint(equalTo: vc.view.leadingAnchor),
-      hud.trailingAnchor.constraint(equalTo: vc.view.trailingAnchor),
-      hud.topAnchor.constraint(equalTo: vc.view.topAnchor),
-      hud.bottomAnchor.constraint(equalTo: vc.view.bottomAnchor),
-    ])
+    vc.view.backgroundColor = UIColor(red: 0.043, green: 0.051, blue: 0.071, alpha: 1)
 
-    window.rootViewController = vc
+    // Use window.bounds (valid now) not vc.view.bounds (zero until VC enters hierarchy).
+    let hud = CarPlayHudView(frame: window.bounds)
+    hud.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    vc.view.addSubview(hud)
+
+    hudVC = vc
     hudView = hud
+    window.rootViewController = vc
+  }
+
+  // Re-asserts our rootVC if CarPlay has replaced it asynchronously.
+  func reattachIfNeeded(to window: UIWindow) {
+    guard let vc = hudVC, window.rootViewController !== vc else { return }
+    window.rootViewController = vc
   }
 
   func removeHUD() {
     hudView?.removeFromSuperview()
     hudView = nil
+    hudVC = nil
   }
 }
 
