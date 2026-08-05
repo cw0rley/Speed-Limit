@@ -1,10 +1,19 @@
 name = "speed-limit-proxy"
 main = "worker.js"
 compatibility_date = "2024-01-01"
+workers_dev = true
 
 # The HERE API key is stored as a secret, not in this file.
 # Set it with: npx wrangler secret put HERE_API_KEY
 # Then paste your key when prompted.
+
+# KV namespace used to cache HERE responses by geo-grid cell (see worker.js).
+# Create it once with:
+#   npx wrangler kv namespace create SPEED_CACHE
+# then paste the printed id below and redeploy.
+[[kv_namespaces]]
+binding = "SPEED_CACHE"
+id = "427035b6cb7140d09f9d0bebdb490398"
 
 [vars]
 # Non-secret environment variables can go here if needed in the future.

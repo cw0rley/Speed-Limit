@@ -17,10 +17,10 @@ A cross-platform (iOS + Android) React Native + Expo app that shows the driver's
 
 ## Speed-limit lookup
 
-`fetchSpeedLimit(lat, lon, signal)` in `App.js` tries two providers in order:
+`fetchSpeedLimit(lat, lon, signal)` in `App.js` tries two providers, **OSM first** (free) then HERE (paid) as a fallback — this order minimizes HERE transactions, the only lookups that cost money. Results are memoized in a session-level `cellCache` keyed by a ~11 m grid cell (`cellKey`), so repeat/looping routes hit no provider at all.
 
-1. **HERE Routing v8** (`fetchSpeedLimitHere`) — `https://router.hereapi.com/v8/routes` with a synthetic ~10 m route and `spans=speedLimit`. Response unit is **m/s**; code converts to km/h. Returns `{ value, unit: 'kmh', source: 'here' }` or `null`.
-2. **Overpass / OpenStreetMap** (`fetchSpeedLimitOverpass`) — queries `way(around:25,lat,lon)[highway][maxspeed]` across two public endpoints. Picks the closest `way` by haversine distance to the center, parses the `maxspeed` tag via `parseMaxspeed()`, and returns `{ value, unit, source: 'osm' }`.
+1. **Overpass / OpenStreetMap** (`fetchSpeedLimitOverpass`) — queries `way(around:25,lat,lon)[highway][maxspeed]` across two public endpoints. Picks the closest `way` by haversine distance to the center, parses the `maxspeed` tag via `parseMaxspeed()`, and returns `{ value, unit, source: 'osm' }`. Tried first.
+2. **HERE Routing v8** (`fetchSpeedLimitHere`) — `https://router.hereapi.com/v8/routes` with a synthetic ~10 m route and `spans=speedLimit`. Response unit is **m/s**; code converts to km/h. Returns `{ value, unit: 'kmh', source: 'here' }` or `null`. Fallback only. The Cloudflare Worker proxy caches HERE responses in KV by grid cell for 30 days, so a given cell costs at most one HERE transaction per month.
 
 `parseMaxspeed` handles `"50"` (defaults to km/h — OSM convention), `"50 mph"`, `"30mph"`, `"50 km/h"`, `"50 kmh"`, `"50 kph"`. Ignores implicit values like `"RU:urban"`, `"walk"`, `"none"`, `"signals"` — returns `null` and the display shows `--`.
 

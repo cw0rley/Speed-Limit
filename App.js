@@ -18,15 +18,15 @@ import { activateKeepAwakeAsync } from 'expo-keep-awake';
 import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
 
-// CarPlay custom HUD — local Expo module. CarPlaySceneDelegate (Swift) handles
-// show/hide; JS only pushes data updates via CarPlayHud.update().
-// Falls back gracefully in Expo Go, Android, or before first native build.
-let CarPlayHud;
+// CarPlay / Android Auto — lazy-require to avoid errors in Expo Go.
+let HybridAutoPlay, AutoPlayInformationTemplate;
 if (Platform.OS === 'ios') {
   try {
-    CarPlayHud = require('carplay-hud');
+    const ap = require('@iternio/react-native-auto-play');
+    HybridAutoPlay = ap.HybridAutoPlay;
+    AutoPlayInformationTemplate = ap.InformationTemplate;
   } catch (_) {
-    // Not available until the native module is built
+    // Not available (e.g. Expo Go)
   }
 }
 
@@ -36,8 +36,9 @@ const MPS_TO_KMH = 3.6;
 
 // ---- Speed limit providers ----
 // Each provider returns { value: number, unit: 'mph' | 'kmh', source: 'here' | 'osm' }
-// or null. The main fetchSpeedLimit() tries HERE first (better coverage) and falls
-// back to Overpass/OSM (free, open) if HERE has no data or errors.
+// or null. The main fetchSpeedLimit() tries OSM/Overpass first (free, open) and
+// only falls back to HERE (paid past the free tier) where OSM has no maxspeed.
+// This keeps HERE transactions — the thing that costs money — to a minimum.
 
 // Get a key at https://developer.here.com. The free "Base" plan allows 1,000
 // transactions/day. For production: proxy this through a small backend — API
@@ -47,7 +48,7 @@ const HERE_API_KEY = '6jTbJVWZkUP4tAtJ-mVBeS24nhj-vs_UD0XVkOK44y4';
 // Set this to your deployed Cloudflare Worker URL to proxy HERE API requests
 // (keeps the API key server-side). Leave null to call HERE directly (local dev).
 // Example: 'https://speed-limit-proxy.your-subdomain.workers.dev'
-const PROXY_URL = 'https://speed-limit-proxy.speed-limit-proxy.workers.dev';
+const PROXY_URL = 'https://speed-limit-proxy.prcunningham.workers.dev';
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
@@ -146,11 +147,35 @@ async function fetchSpeedLimitHere(lat, lon, signal) {
   }
 }
 
-// Try HERE first (better coverage), fall back to OSM/Overpass.
+// Session-level cache of results by ~11 m geo-grid cell. Skips the network
+// entirely when we've already resolved a nearby point this session — cutting both
+// OSM and HERE calls on repeat/looping routes. Cleared when the app restarts.
+const CELL_PRECISION = 4; // decimal places (~11 m)
+const cellCache = new Map();
+const CELL_CACHE_MAX = 500;
+
+function cellKey(lat, lon) {
+  return `${lat.toFixed(CELL_PRECISION)},${lon.toFixed(CELL_PRECISION)}`;
+}
+
+// Try OSM/Overpass first (free), fall back to HERE (paid) only where OSM has no
+// data. Results are memoized per grid cell so repeat passes hit no provider.
 async function fetchSpeedLimit(lat, lon, signal) {
-  const here = await fetchSpeedLimitHere(lat, lon, signal);
-  if (here) return here;
-  return await fetchSpeedLimitOverpass(lat, lon, signal);
+  const key = cellKey(lat, lon);
+  if (cellCache.has(key)) return cellCache.get(key);
+
+  let result = await fetchSpeedLimitOverpass(lat, lon, signal);
+  if (!result) result = await fetchSpeedLimitHere(lat, lon, signal);
+
+  // Only cache real hits. A null may just be a flaky Overpass endpoint; caching it
+  // would suppress a valid HERE fallback on the next pass.
+  if (result) {
+    if (cellCache.size >= CELL_CACHE_MAX) {
+      cellCache.delete(cellCache.keys().next().value);
+    }
+    cellCache.set(key, result);
+  }
+  return result;
 }
 
 function haversine(lat1, lon1, lat2, lon2) {
@@ -227,6 +252,48 @@ export default function App() {
   const lastQueriedRef = useRef({ lat: null, lon: null, t: 0 });
   const abortRef = useRef(null);
   const lastOverRef = useRef(false);
+
+  // ---- CarPlay ----
+  const carplayTemplateRef = useRef(null);
+  const carplayConnectedRef = useRef(false);
+  const carplayLastTextRef = useRef('');
+
+  useEffect(() => {
+    if (!HybridAutoPlay) return;
+
+    const onConnect = () => {
+      carplayConnectedRef.current = true;
+      const tpl = new AutoPlayInformationTemplate({
+        title: { text: 'Speed & Limit' },
+        items: [
+          { type: 'text', title: { text: '-- MPH' }, detailedText: { text: 'Current speed' } },
+          { type: 'text', title: { text: '--' }, detailedText: { text: 'Speed limit' } },
+        ],
+      });
+      carplayTemplateRef.current = tpl;
+      carplayLastTextRef.current = ''; // force the next update to push real values
+      tpl.setRootTemplate();
+    };
+
+    const onDisconnect = () => {
+      carplayConnectedRef.current = false;
+      carplayTemplateRef.current = null;
+      carplayLastTextRef.current = '';
+    };
+
+    const cleanupConnect = HybridAutoPlay.addListener('didConnect', onConnect);
+    const cleanupDisconnect = HybridAutoPlay.addListener('didDisconnect', onDisconnect);
+
+    // If already connected when component mounts
+    if (HybridAutoPlay.isConnected()) {
+      onConnect();
+    }
+
+    return () => {
+      cleanupConnect();
+      cleanupDisconnect();
+    };
+  }, []);
 
   // Request permission + start streaming location
   useEffect(() => {
@@ -351,16 +418,35 @@ export default function App() {
     lastOverRef.current = isOver;
   }, [isOver]);
 
-  // Push data to the CarPlay HUD on every render.
-  // CarPlaySceneDelegate (native) controls show/hide; this just keeps values current.
+  // Update CarPlay display when speed, limit, or unit changes
   useEffect(() => {
-    if (!CarPlayHud) return;
-    CarPlayHud.update({
-      speed: permStatus === 'granted' ? Math.round(currentSpeed) : -1,
-      speedColor,
-      limit: displayLimit != null ? displayLimit : null,
-      unit,
-    }).catch(() => {});
+    if (!carplayTemplateRef.current) return;
+    const unitLabel = unit === 'mph' ? 'MPH' : 'KM/H';
+
+    const hasSpeed = permStatus === 'granted';
+    const speedText = hasSpeed
+      ? `${Math.round(currentSpeed)} ${unitLabel}`
+      : `-- ${unitLabel}`;
+    // CarPlay can't recolor anything, so the over-limit alert has to live in text.
+    const overBy = isOver ? Math.round(currentSpeed) - displayLimit : 0;
+    const speedSubtitle = !hasSpeed
+      ? 'Waiting for GPS'
+      : isOver
+      ? `${overBy} over the limit`
+      : 'Current speed';
+
+    const limitText = displayLimit != null ? `${displayLimit} ${unitLabel}` : 'Unknown';
+
+    // Only push to CarPlay when the displayed text actually changes — the head
+    // unit can't keep up with a per-render refresh and would flicker otherwise.
+    const signature = `${speedText}|${speedSubtitle}|${limitText}`;
+    if (signature === carplayLastTextRef.current) return;
+    carplayLastTextRef.current = signature;
+
+    carplayTemplateRef.current.updateItems([
+      { type: 'text', title: { text: speedText }, detailedText: { text: speedSubtitle } },
+      { type: 'text', title: { text: limitText }, detailedText: { text: 'Speed limit' } },
+    ]);
   });
 
   const bgColor = '#0b0d12';

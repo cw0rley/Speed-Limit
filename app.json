@@ -2,7 +2,7 @@
   "expo": {
     "name": "Speed Limit",
     "slug": "speed-limit",
-    "version": "1.1.2",
+    "version": "1.1.3",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",

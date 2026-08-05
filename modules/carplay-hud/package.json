@@ -1,7 +1,0 @@
-{
-  "name": "carplay-hud",
-  "version": "1.0.0",
-  "description": "CarPlay HUD overlay for Speed Limit app",
-  "main": "index.js",
-  "private": true
-}
