@@ -21,7 +21,7 @@
         "ascAppId": "6763160045"
       },
       "android": {
-        "serviceAccountKeyPath": "../Workout/prforgd/google-service-account.json",
+        "serviceAccountKeyPath": "../prforgd/prforgd/google-service-account.json",
         "track": "production"
       }
     }
