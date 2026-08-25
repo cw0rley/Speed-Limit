@@ -17,17 +17,28 @@ import * as Location from 'expo-location';
 import { activateKeepAwakeAsync } from 'expo-keep-awake';
 import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
+import { SIGN_IMAGES, SIGN_UNKNOWN } from './signAssets';
 
 // CarPlay / Android Auto — lazy-require to avoid errors in Expo Go.
-let HybridAutoPlay, AutoPlayInformationTemplate;
+let HybridAutoPlay, AutoPlayGridTemplate;
 if (Platform.OS === 'ios') {
   try {
     const ap = require('@iternio/react-native-auto-play');
     HybridAutoPlay = ap.HybridAutoPlay;
-    AutoPlayInformationTemplate = ap.InformationTemplate;
+    AutoPlayGridTemplate = ap.GridTemplate;
   } catch (_) {
     // Not available (e.g. Expo Go)
   }
+}
+
+// Pick the pre-rendered speed-limit sign image closest to the displayed limit.
+// CarPlay can't draw the app's custom sign, so we show a baked PNG in a Grid
+// tile. Real limits are multiples of 5, which is what we render; snap to the
+// nearest available sign for the odd converted value.
+function signImageFor(displayLimit) {
+  if (displayLimit == null) return SIGN_UNKNOWN;
+  const snapped = Math.max(5, Math.min(130, Math.round(displayLimit / 5) * 5));
+  return SIGN_IMAGES[snapped] || SIGN_UNKNOWN;
 }
 
 // ---- Unit conversions ----
@@ -263,11 +274,14 @@ export default function App() {
 
     const onConnect = () => {
       carplayConnectedRef.current = true;
-      const tpl = new AutoPlayInformationTemplate({
+      const tpl = new AutoPlayGridTemplate({
         title: { text: 'Speed & Limit' },
-        items: [
-          { type: 'text', title: { text: '-- MPH' }, detailedText: { text: 'Current speed' } },
-          { type: 'text', title: { text: '--' }, detailedText: { text: 'Speed limit' } },
+        buttons: [
+          {
+            image: { type: 'asset', image: SIGN_UNKNOWN },
+            title: { text: '-- MPH' },
+            onPress: () => {},
+          },
         ],
       });
       carplayTemplateRef.current = tpl;
@@ -418,34 +432,34 @@ export default function App() {
     lastOverRef.current = isOver;
   }, [isOver]);
 
-  // Update CarPlay display when speed, limit, or unit changes
+  // Update the CarPlay grid tile when speed, limit, or unit changes. The tile's
+  // image is the speed-limit sign; its title carries the live speed (and the
+  // over-limit alert, since CarPlay can't recolor a tile).
   useEffect(() => {
     if (!carplayTemplateRef.current) return;
     const unitLabel = unit === 'mph' ? 'MPH' : 'KM/H';
-
     const hasSpeed = permStatus === 'granted';
+
     const speedText = hasSpeed
       ? `${Math.round(currentSpeed)} ${unitLabel}`
       : `-- ${unitLabel}`;
-    // CarPlay can't recolor anything, so the over-limit alert has to live in text.
     const overBy = isOver ? Math.round(currentSpeed) - displayLimit : 0;
-    const speedSubtitle = !hasSpeed
+    const title = !hasSpeed
       ? 'Waiting for GPS'
       : isOver
-      ? `${overBy} over the limit`
-      : 'Current speed';
+      ? `${speedText}  (${overBy} over)`
+      : speedText;
 
-    const limitText = displayLimit != null ? `${displayLimit} ${unitLabel}` : 'Unknown';
+    const signImg = signImageFor(displayLimit);
 
-    // Only push to CarPlay when the displayed text actually changes — the head
-    // unit can't keep up with a per-render refresh and would flicker otherwise.
-    const signature = `${speedText}|${speedSubtitle}|${limitText}`;
+    // Only push when something visible changed — the head unit can't keep up
+    // with a per-render refresh and would flicker otherwise.
+    const signature = `${title}|${displayLimit == null ? 'na' : displayLimit}`;
     if (signature === carplayLastTextRef.current) return;
     carplayLastTextRef.current = signature;
 
-    carplayTemplateRef.current.updateItems([
-      { type: 'text', title: { text: speedText }, detailedText: { text: speedSubtitle } },
-      { type: 'text', title: { text: limitText }, detailedText: { text: 'Speed limit' } },
+    carplayTemplateRef.current.updateGrid([
+      { image: { type: 'asset', image: signImg }, title: { text: title }, onPress: () => {} },
     ]);
   });
 
