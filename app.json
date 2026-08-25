@@ -44,7 +44,8 @@
           "locationWhenInUsePermission": "Allow Speed Limit to use your location to show driving speed and speed limits."
         }
       ],
-      "./plugins/withCarPlay"
+      "./plugins/withCarPlay",
+      "./plugins/withRemoveAndroidAuto"
     ],
     "extra": {
       "eas": {
