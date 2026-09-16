@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useSyncExternalStore } from 'react';
 import {
   StyleSheet,
   Text,
@@ -19,16 +19,110 @@ import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
 
 // CarPlay / Android Auto — lazy-require to avoid errors in Expo Go.
-let HybridAutoPlay, AutoPlayInformationTemplate;
+let HybridAutoPlay, AutoPlayMapTemplate;
 if (Platform.OS === 'ios') {
   try {
     const ap = require('@iternio/react-native-auto-play');
     HybridAutoPlay = ap.HybridAutoPlay;
-    AutoPlayInformationTemplate = ap.InformationTemplate;
+    AutoPlayMapTemplate = ap.MapTemplate;
   } catch (_) {
     // Not available (e.g. Expo Go)
   }
 }
+
+// ---- CarPlay shared store ----
+// The CarPlay screen renders in a SEPARATE React root (registered via
+// AppRegistry by MapTemplate), so it can't receive props from <App>. Both sides
+// communicate through this module-level store: the screen subscribes with
+// useSyncExternalStore, the phone tree pushes live values in. The store de-dupes
+// so pushing on every render is cheap and won't churn the head unit.
+let carplaySnapshot = {
+  hasSpeed: false,
+  speed: 0,
+  unit: 'mph',
+  displayLimit: null,
+  isOver: false,
+  speedColor: '#fff',
+};
+let carplaySignature = '';
+const carplayListeners = new Set();
+function pushCarplayState(next) {
+  const sig = `${next.hasSpeed}|${Math.round(next.speed)}|${next.unit}|${next.displayLimit}|${next.isOver}|${next.speedColor}`;
+  if (sig === carplaySignature) return;
+  carplaySignature = sig;
+  carplaySnapshot = next;
+  carplayListeners.forEach((l) => l());
+}
+function subscribeCarplay(cb) {
+  carplayListeners.add(cb);
+  return () => carplayListeners.delete(cb);
+}
+function getCarplaySnapshot() {
+  return carplaySnapshot;
+}
+
+// Full-screen speed + speed-limit display drawn inside the CarPlay MapTemplate
+// window. Unlike the old Grid tile (fixed ~64pt icon), this is a real RN view we
+// fully control, so it mirrors the phone app: big current speed on the left and
+// a US-style speed-limit sign on the right, red background when over the limit.
+function CarPlaySignScreen() {
+  const s = useSyncExternalStore(subscribeCarplay, getCarplaySnapshot);
+  const unitLabel = s.unit === 'mph' ? 'MPH' : 'KM/H';
+  const bg = s.isOver ? '#8a0f10' : '#0b0d12';
+  return (
+    <View style={[carplayStyles.root, { backgroundColor: bg }]}>
+      <View style={carplayStyles.speedBlock}>
+        <Text style={carplayStyles.speedLabel}>SPEED</Text>
+        <Text
+          style={[carplayStyles.speedValue, { color: s.hasSpeed ? s.speedColor : '#8a97a7' }]}
+        >
+          {s.hasSpeed ? Math.round(s.speed) : '--'}
+        </Text>
+        <Text style={carplayStyles.speedUnit}>{unitLabel}</Text>
+      </View>
+      <View style={carplayStyles.sign}>
+        <Text style={carplayStyles.signLabel}>SPEED{'\n'}LIMIT</Text>
+        <Text style={carplayStyles.signValue}>
+          {s.displayLimit != null ? s.displayLimit : '--'}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+const carplayStyles = StyleSheet.create({
+  root: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-evenly',
+    paddingHorizontal: 32,
+  },
+  speedBlock: { alignItems: 'center', justifyContent: 'center' },
+  speedLabel: { color: '#8a97a7', fontSize: 22, fontWeight: '700', letterSpacing: 2 },
+  speedValue: { fontSize: 160, fontWeight: '800', lineHeight: 168 },
+  speedUnit: { color: '#8a97a7', fontSize: 24, fontWeight: '700', letterSpacing: 2 },
+  sign: {
+    backgroundColor: '#fff',
+    borderColor: '#000',
+    borderWidth: 8,
+    borderRadius: 20,
+    paddingVertical: 20,
+    paddingHorizontal: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 220,
+  },
+  signLabel: {
+    color: '#000',
+    fontSize: 30,
+    fontWeight: '800',
+    textAlign: 'center',
+    lineHeight: 32,
+    letterSpacing: 1,
+  },
+  signValue: { color: '#000', fontSize: 130, fontWeight: '900', lineHeight: 140, marginTop: 4 },
+});
 
 // ---- Unit conversions ----
 const MPS_TO_MPH = 2.2369362921;
@@ -39,6 +133,14 @@ const MPS_TO_KMH = 3.6;
 // or null. The main fetchSpeedLimit() tries OSM/Overpass first (free, open) and
 // only falls back to HERE (paid past the free tier) where OSM has no maxspeed.
 // This keeps HERE transactions — the thing that costs money — to a minimum.
+
+// ⚠️ HERE IS INTENTIONALLY DISABLED. The HERE "free tier" billed ~$1,000 in
+// overage (two ~$500 charges) despite the throttle + cache "limits", which had
+// gaps and never included a real hard spend cap. HERE stays OFF via this kill
+// switch until a proper cap is in place and the decision to re-enable is made.
+// DO NOT flip this to true without a hard spend cap on the HERE account first.
+// See CLAUDE.md → "HERE is disabled" and memory: here-billing-incident.
+const HERE_ENABLED = false;
 
 // Get a key at https://developer.here.com. The free "Base" plan allows 1,000
 // transactions/day. For production: proxy this through a small backend — API
@@ -115,6 +217,10 @@ out tags center 1;`;
 // minimal ~10 m route from (lat, lon) to a nearby point, then read the
 // speedLimit of the first span that has one.
 async function fetchSpeedLimitHere(lat, lon, signal) {
+  // Hard kill switch — HERE is disabled after a ~$1,000 billing incident. This
+  // makes "off" a code fact, not just a disabled account key, so re-enabling the
+  // key can't silently resume billing. See HERE_ENABLED above.
+  if (!HERE_ENABLED) return null;
   if (!PROXY_URL && (!HERE_API_KEY || HERE_API_KEY.startsWith('YOUR_'))) return null;
 
   const dLat = 0.00009; // ~10 m north
@@ -256,29 +362,25 @@ export default function App() {
   // ---- CarPlay ----
   const carplayTemplateRef = useRef(null);
   const carplayConnectedRef = useRef(false);
-  const carplayLastTextRef = useRef('');
 
   useEffect(() => {
-    if (!HybridAutoPlay) return;
+    if (!HybridAutoPlay || !AutoPlayMapTemplate) return;
 
     const onConnect = () => {
       carplayConnectedRef.current = true;
-      const tpl = new AutoPlayInformationTemplate({
-        title: { text: 'Speed & Limit' },
-        items: [
-          { type: 'text', title: { text: '-- MPH' }, detailedText: { text: 'Current speed' } },
-          { type: 'text', title: { text: '--' }, detailedText: { text: 'Speed limit' } },
-        ],
+      // MapTemplate renders CarPlaySignScreen full-screen in the head-unit
+      // window. We don't use any navigation features — just the custom canvas.
+      const tpl = new AutoPlayMapTemplate({
+        component: CarPlaySignScreen,
+        onStopNavigation: () => {},
       });
       carplayTemplateRef.current = tpl;
-      carplayLastTextRef.current = ''; // force the next update to push real values
       tpl.setRootTemplate();
     };
 
     const onDisconnect = () => {
       carplayConnectedRef.current = false;
       carplayTemplateRef.current = null;
-      carplayLastTextRef.current = '';
     };
 
     const cleanupConnect = HybridAutoPlay.addListener('didConnect', onConnect);
@@ -418,35 +520,19 @@ export default function App() {
     lastOverRef.current = isOver;
   }, [isOver]);
 
-  // Update CarPlay display when speed, limit, or unit changes
+  // Push live values into the CarPlay screen's store. CarPlaySignScreen renders
+  // in a separate React root, so it reads from the store rather than props. The
+  // store de-dupes internally, so running this on every render is cheap and
+  // won't flicker the head unit.
   useEffect(() => {
-    if (!carplayTemplateRef.current) return;
-    const unitLabel = unit === 'mph' ? 'MPH' : 'KM/H';
-
-    const hasSpeed = permStatus === 'granted';
-    const speedText = hasSpeed
-      ? `${Math.round(currentSpeed)} ${unitLabel}`
-      : `-- ${unitLabel}`;
-    // CarPlay can't recolor anything, so the over-limit alert has to live in text.
-    const overBy = isOver ? Math.round(currentSpeed) - displayLimit : 0;
-    const speedSubtitle = !hasSpeed
-      ? 'Waiting for GPS'
-      : isOver
-      ? `${overBy} over the limit`
-      : 'Current speed';
-
-    const limitText = displayLimit != null ? `${displayLimit} ${unitLabel}` : 'Unknown';
-
-    // Only push to CarPlay when the displayed text actually changes — the head
-    // unit can't keep up with a per-render refresh and would flicker otherwise.
-    const signature = `${speedText}|${speedSubtitle}|${limitText}`;
-    if (signature === carplayLastTextRef.current) return;
-    carplayLastTextRef.current = signature;
-
-    carplayTemplateRef.current.updateItems([
-      { type: 'text', title: { text: speedText }, detailedText: { text: speedSubtitle } },
-      { type: 'text', title: { text: limitText }, detailedText: { text: 'Speed limit' } },
-    ]);
+    pushCarplayState({
+      hasSpeed: permStatus === 'granted',
+      speed: currentSpeed,
+      unit,
+      displayLimit,
+      isOver,
+      speedColor,
+    });
   });
 
   const bgColor = '#0b0d12';
