@@ -134,6 +134,14 @@ const MPS_TO_KMH = 3.6;
 // only falls back to HERE (paid past the free tier) where OSM has no maxspeed.
 // This keeps HERE transactions — the thing that costs money — to a minimum.
 
+// ⚠️ HERE IS INTENTIONALLY DISABLED. The HERE "free tier" billed ~$1,000 in
+// overage (two ~$500 charges) despite the throttle + cache "limits", which had
+// gaps and never included a real hard spend cap. HERE stays OFF via this kill
+// switch until a proper cap is in place and the decision to re-enable is made.
+// DO NOT flip this to true without a hard spend cap on the HERE account first.
+// See CLAUDE.md → "HERE is disabled" and memory: here-billing-incident.
+const HERE_ENABLED = false;
+
 // Get a key at https://developer.here.com. The free "Base" plan allows 1,000
 // transactions/day. For production: proxy this through a small backend — API
 // keys shipped inside a mobile app can be extracted by anyone who installs it.
@@ -209,6 +217,10 @@ out tags center 1;`;
 // minimal ~10 m route from (lat, lon) to a nearby point, then read the
 // speedLimit of the first span that has one.
 async function fetchSpeedLimitHere(lat, lon, signal) {
+  // Hard kill switch — HERE is disabled after a ~$1,000 billing incident. This
+  // makes "off" a code fact, not just a disabled account key, so re-enabling the
+  // key can't silently resume billing. See HERE_ENABLED above.
+  if (!HERE_ENABLED) return null;
   if (!PROXY_URL && (!HERE_API_KEY || HERE_API_KEY.startsWith('YOUR_'))) return null;
 
   const dLat = 0.00009; // ~10 m north
