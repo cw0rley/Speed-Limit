@@ -17,10 +17,12 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.claytonrugby.speedlimit",
+      "appleTeamId": "N27NV97893",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Speed Limit uses your location to show your current driving speed and the speed limit of the road you're on.",
         "NSMicrophoneUsageDescription": "Speed Limit may use the microphone for voice input on CarPlay.",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSSupportsLiveActivities": true
       }
     },
     "android": {
@@ -41,10 +43,13 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Allow Speed Limit to use your location to show driving speed and speed limits."
+          "locationWhenInUsePermission": "Allow Speed Limit to use your location to show driving speed and speed limits.",
+          "isIosBackgroundLocationEnabled": true,
+          "locationAlwaysAndWhenInUsePermission": "Speed Limit uses your location while driving, including in the background, to keep your speed and the speed limit up to date on CarPlay and the Lock Screen."
         }
       ],
-      "./plugins/withCarPlay"
+      "./plugins/withCarPlay",
+      "@bacons/apple-targets"
     ],
     "extra": {
       "eas": {

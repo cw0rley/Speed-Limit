@@ -4,6 +4,12 @@ A cross-platform (iOS + Android) React Native + Expo app that shows the driver's
 speed alongside the posted speed limit for the road they're on. Ships to the App Store and
 Play Store; also targets **CarPlay** (full-screen custom sign) on iOS.
 
+> **v2 direction (decided 2026-09-16) — see [`docs/ROADMAP.md`](docs/ROADMAP.md):** evolve this
+> app (upgrade to Expo SDK 56+), replace HERE with **OSM first + TomTom Reverse Geocode fallback**
+> via the Worker, make it **subscription-only** (RevenueCat), and ship a **CarPlay Live Activity**
+> (no entitlement needed) instead of relying on the full-screen `MapTemplate`. This file still
+> describes the app *as it is today*; update it as roadmap phases land.
+
 > **Orient here first.** This file is the source of truth for how the app is wired. The root
 > `README.md` is user-facing and lags behind (it still describes HERE-first lookup and a
 > "keep screen on" toggle that no longer exist as written — trust this file over it).
@@ -32,7 +38,11 @@ Play Store; also targets **CarPlay** (full-screen custom sign) on iOS.
   under key `@speed_limit_thresholds`.
 - `@iternio/react-native-auto-play` — CarPlay/Android Auto. Lazy-`require`d on iOS only so
   Expo Go (which lacks the native module) doesn't crash.
-- `expo-task-manager` is a dependency but **not currently used** (no background location wired).
+- `expo-task-manager` — defines the `speed-limit-drive` background location task (drive mode,
+  iOS only; see CarPlay below).
+- `@bacons/apple-targets` — generates the Live Activity widget extension from `targets/`.
+- `modules/speed-limit-activity` — local Expo module (Swift) bridging JS → ActivityKit
+  (`start` / `update` / `end` / `areActivitiesEnabled`).
 - `expo-status-bar`.
 
 ## Speed-limit lookup
@@ -64,15 +74,17 @@ user's selected display unit (mph↔kmh, `1.609344`).
 
 ### Throttling
 
-The location callback calls `maybeFetchLimit`, gated: skip if we're within **40 m** of the last
-query **and** less than **15 s** since the last query. In-flight requests are aborted
+`handleLocation` calls the module-level `maybeFetchLimit`, gated: skip if less than **5 s**
+(`MIN_QUERY_MS`) since the last query; otherwise skip if within **40 m** of the last query
+**and** less than **15 s** since it. In-flight requests are aborted
 (`AbortController`) when a new query supersedes them.
 
 > ⚠️ **This throttle barely throttles while driving — it is a root cause of the HERE billing
 > incident.** The gate fires a fetch when you've moved 40 m **OR** 15 s have passed. At highway
 > speed (~27 m/s) you cover 40 m in **~1.5 s**, so the 40 m branch dominates and the throttle
-> degrades to roughly **one fetch per 40 m of travel** — ~2,400 calls per hour of driving, not
-> the "~120 calls per 30-minute drive" older docs claimed. If HERE is ever re-enabled, this must
+> degraded to roughly **one fetch per 40 m of travel** — ~2,400 calls per hour of driving, not
+> the "~120 calls per 30-minute drive" older docs claimed. The 5 s floor (added with drive mode)
+> caps it at ~720/hr — still far too many for a paid provider. If HERE is ever re-enabled, this must
 > be changed to an AND-style gate with a real minimum-time floor.
 
 ### ⚠️ HERE is disabled — it cost real money
@@ -143,10 +155,10 @@ The proxy source is in **`proxy/`**:
 - `proxy/.wrangler/`, `proxy/kv_err.txt`, `proxy/kv_keys.json` are local artifacts (gitignored /
   untracked scratch), not part of the deploy.
 
-HERE's "free tier: 1,000 transactions/day" was **not** safe in practice — it generated ~$1,000
-of overage before the service was disabled (see the warning above). OSM-first ordering + the KV
-cache were meant to keep usage below the cap, but the cap was clearly exceeded anyway; treat the
-root cause as unresolved.
+HERE's "free tier: 1,000 transactions/day" was **not** safe in practice — the calls were billed
+as paid Time Aware Routing, so the free tier never applied (see the root cause above). What is
+still **unexplained** is why billing continued after the Aug 5 OSM-first fix (empty KV cache
+and/or the fix not yet shipped to phones are the leading theories).
 
 ## UI (phone)
 
@@ -173,37 +185,33 @@ root cause as unresolved.
 
 ## CarPlay (iOS)
 
-CarPlay is the active area of work. The design: a **full-screen custom sign** on the head unit
-mirroring the phone (big current speed + US-style speed-limit sign, red background when over).
+Apple **refused the Navigation entitlement** (Case-ID 21844634, 2026-09-16), so a full-screen
+custom CarPlay view is not possible. The app holds the **Driving Task** entitlement
+(`com.apple.developer.carplay-driving-task`, granted 2026-08-25) — template-only. Custom graphics
+come from a **Live Activity**, which needs no CarPlay entitlement and shows on the CarPlay
+Dashboard on iOS 26+. Work is on branch **`feat/carplay-live-activity`** (untested on device yet).
 
-- **Template**: uses `@iternio/react-native-auto-play`'s **`MapTemplate`** (`AutoPlayMapTemplate`)
-  — the only CarPlay surface a third-party app can use to draw a full-screen custom RN view.
-  (An earlier iteration used a **Grid** template with pre-rendered `carplay-signs/*.png` tiles,
-  limited to a ~64pt icon; superseded — see commit history. The `carplay-signs/` PNGs remain in
-  the repo from that approach.)
-- **Rendering**: `CarPlaySignScreen` renders in a **separate React root** (registered via
-  AppRegistry by the library), so it cannot receive props from `<App>`. Communication is through
-  a **module-level store** (`pushCarplayState` / `subscribeCarplay` / `getCarplaySnapshot`); the
-  screen reads it via `useSyncExternalStore`, the phone tree pushes live values on every render.
-  The store de-dupes by a string signature, so pushing every render is cheap and won't churn
-  the head unit.
-- **Lifecycle**: an effect subscribes to `HybridAutoPlay` `didConnect` / `didDisconnect`; on
-  connect it constructs the `MapTemplate` with `component: CarPlaySignScreen` and calls
-  `setRootTemplate()`. Handles the already-connected-at-mount case too.
-- **Native glue** (`plugins/withCarPlay.js`, an Expo config plugin):
-  1. Adds the **`com.apple.developer.carplay-maps`** entitlement (CPMapTemplate) and removes
-     the mutually-exclusive `carplay-driving-task` entitlement.
-  2. Writes `UIApplicationSceneManifest` scene configs (`HeadUnitSceneDelegate` for the CarPlay
-     scene, `WindowApplicationSceneDelegate` for the phone window).
-  3. Injects `getRootViewForAutoplay(...)` into the Swift `AppDelegate` (covers new + old arch)
-     so the library can mount an RN root view into the CarPlay window, plus the
-     `import ExpoModulesCore` it needs.
-
-> ⚠️ **Branch `feat/carplay-grid-display` is not signable/buildable yet.** The
-> `com.apple.developer.carplay-maps` entitlement requires Apple to grant the **CarPlay Maps /
-> Navigation entitlement** via the request form (Case-ID **21844634**), and the provisioning
-> profile must be regenerated afterward. Until Apple approves, EAS iOS builds with this
-> entitlement will fail to sign — that's expected. See memory note `carplay-driving-task`.
+- **Head unit (template)**: `@iternio/react-native-auto-play` `InformationTemplate` with the
+  limit + a drive-mode hint. Updates rate-limited to one per 10 s (Driving Task rule).
+- **Live Activity** (`targets/live-activity/SpeedLimitLiveActivity.swift`, SwiftUI, extension
+  deployment target iOS 18): `.supplementalActivityFamilies([.small])` is the CarPlay size —
+  speed on the left, US-style (R2-1) sign on the right, red tint when over. Also Lock Screen and
+  Dynamic Island layouts. `SpeedLimitAttributes` is duplicated in the Expo module and **must stay
+  identical** in both files. `staleDate` = 30 s so a dead app shows `--`, not a frozen speed.
+- **Drive mode** (the "CarPlay" footer button, iOS only): starts
+  `Location.startLocationUpdatesAsync('speed-limit-drive', …)` with
+  `showsBackgroundLocationIndicator` (works with When-In-Use permission; blue pill) and starts the
+  Live Activity (must be done in the foreground). Stopping ends both.
+- **State**: location/limit state lives in a module-level drive store (`setDrive`,
+  `useSyncExternalStore`) fed by both the foreground `watchPositionAsync` and the background task;
+  `syncLiveActivity()` de-dupes pushes with a 15 s heartbeat. `computeDisplay()` is the shared
+  speed/limit/color math.
+- **Native glue** (`plugins/withCarPlay.js`): driving-task entitlement (removes `carplay-maps`),
+  `UIApplicationSceneManifest` scene configs, and the `getRootViewForAutoplay` AppDelegate hook.
+- **Unknowns to test**: how often CarPlay actually redraws the Live Activity at 1 Hz app updates;
+  battery use; App Review justification for background location.
+- iOS prebuild can't run on Windows — the EAS build is the first real compile of the Swift code.
+- `ios.appleTeamId` (`N27NV97893`) is set in `app.json` for apple-targets signing.
 
 ## Permissions / config (`app.json`)
 
@@ -250,11 +258,15 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
 
 ## Known gaps / next work
 
-- **CarPlay blocked on Apple entitlement approval** (Case-ID 21844634) — cannot build/sign the
-  branch until granted. This is the current headline item.
-- **No background/driving mode.** Foreground + keep-awake only. True background would need
-  `expo-task-manager` (already a dep) + `Location.startLocationUpdatesAsync` + an Android
-  foreground service + iOS background-location entitlement.
+- **v2 roadmap** — provider swap, subscription, CarPlay Live Activity: see `docs/ROADMAP.md`.
+- **Throttle must be fixed** before any paid provider is used (40 m OR 15 s → ~2,400 calls/hr at
+  speed). Also cache negative (OSM-miss) results so unmapped roads don't hammer the fallback.
+- **CarPlay Navigation entitlement was REFUSED** (Case-ID 21844634, 2026-09-16) — the `MapTemplate`
+  approach on `feat/carplay-grid-display` is dead. Custom graphics now go through a Live Activity /
+  widget (SwiftUI, no entitlement). The
+  **Driving Task** entitlement was granted 2026-08-25.
+- **Drive mode is iOS-only and unverified** (`feat/carplay-live-activity`). Android has no
+  background mode (would need a foreground service + `ACCESS_BACKGROUND_LOCATION`).
 - **No trip history / max-speed recorder.** Would be a ring buffer of `(t, speed, lat, lon)`.
 - **No speed smoothing.** Raw OS speed jitters near zero; a ~1 s EMA would feel nicer.
 - **HERE is disabled after ~$1,000 of overage** (see the billing warning). The app is OSM-only
@@ -278,12 +290,14 @@ and Apple's entitlement before it will sign.
 
 ```
 speed-limit/
-  App.js                 # main component + all logic, incl. CarPlaySignScreen (~945 lines)
+  App.js                 # main component + all logic: drive store, drive mode, CarPlay template
   app.json               # Expo config, permissions, plugins, bundle ids
   eas.json               # EAS build/submit profiles
   package.json           # deps (Expo SDK 54 / RN 0.81 / React 19)
   babel.config.js
-  plugins/withCarPlay.js # config plugin: carplay-maps entitlement, scenes, AppDelegate hook
+  plugins/withCarPlay.js # config plugin: carplay-driving-task entitlement, scenes, AppDelegate hook
+  targets/live-activity/ # SwiftUI Live Activity extension (CarPlay Dashboard / Lock Screen)
+  modules/speed-limit-activity/ # local Expo module: JS -> ActivityKit bridge
   proxy/
     worker.js            # Cloudflare Worker: HERE proxy + 30-day KV cache
     wrangler.toml        # Worker + KV config (secret HERE_API_KEY set separately)
@@ -292,6 +306,7 @@ speed-limit/
   carplay-signs/         # pre-rendered sign PNGs (retired Grid-template approach)
   generate-*.js          # asset/screenshot/sign generators (use sharp)
   privacy-policy.html
+  docs/ROADMAP.md        # v2 plan: TomTom fallback, subscription, CarPlay Live Activity
   README.md              # user-facing setup docs (lags this file)
   CLAUDE.md              # this file — orient here first
 ```

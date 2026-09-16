@@ -14,115 +14,23 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
+import * as TaskManager from 'expo-task-manager';
 import { activateKeepAwakeAsync } from 'expo-keep-awake';
 import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
+import SpeedLimitActivity from './modules/speed-limit-activity';
 
-// CarPlay / Android Auto — lazy-require to avoid errors in Expo Go.
-let HybridAutoPlay, AutoPlayMapTemplate;
+// CarPlay — lazy-require to avoid errors in Expo Go.
+let HybridAutoPlay, AutoPlayInformationTemplate;
 if (Platform.OS === 'ios') {
   try {
     const ap = require('@iternio/react-native-auto-play');
     HybridAutoPlay = ap.HybridAutoPlay;
-    AutoPlayMapTemplate = ap.MapTemplate;
+    AutoPlayInformationTemplate = ap.InformationTemplate;
   } catch (_) {
     // Not available (e.g. Expo Go)
   }
 }
-
-// ---- CarPlay shared store ----
-// The CarPlay screen renders in a SEPARATE React root (registered via
-// AppRegistry by MapTemplate), so it can't receive props from <App>. Both sides
-// communicate through this module-level store: the screen subscribes with
-// useSyncExternalStore, the phone tree pushes live values in. The store de-dupes
-// so pushing on every render is cheap and won't churn the head unit.
-let carplaySnapshot = {
-  hasSpeed: false,
-  speed: 0,
-  unit: 'mph',
-  displayLimit: null,
-  isOver: false,
-  speedColor: '#fff',
-};
-let carplaySignature = '';
-const carplayListeners = new Set();
-function pushCarplayState(next) {
-  const sig = `${next.hasSpeed}|${Math.round(next.speed)}|${next.unit}|${next.displayLimit}|${next.isOver}|${next.speedColor}`;
-  if (sig === carplaySignature) return;
-  carplaySignature = sig;
-  carplaySnapshot = next;
-  carplayListeners.forEach((l) => l());
-}
-function subscribeCarplay(cb) {
-  carplayListeners.add(cb);
-  return () => carplayListeners.delete(cb);
-}
-function getCarplaySnapshot() {
-  return carplaySnapshot;
-}
-
-// Full-screen speed + speed-limit display drawn inside the CarPlay MapTemplate
-// window. Unlike the old Grid tile (fixed ~64pt icon), this is a real RN view we
-// fully control, so it mirrors the phone app: big current speed on the left and
-// a US-style speed-limit sign on the right, red background when over the limit.
-function CarPlaySignScreen() {
-  const s = useSyncExternalStore(subscribeCarplay, getCarplaySnapshot);
-  const unitLabel = s.unit === 'mph' ? 'MPH' : 'KM/H';
-  const bg = s.isOver ? '#8a0f10' : '#0b0d12';
-  return (
-    <View style={[carplayStyles.root, { backgroundColor: bg }]}>
-      <View style={carplayStyles.speedBlock}>
-        <Text style={carplayStyles.speedLabel}>SPEED</Text>
-        <Text
-          style={[carplayStyles.speedValue, { color: s.hasSpeed ? s.speedColor : '#8a97a7' }]}
-        >
-          {s.hasSpeed ? Math.round(s.speed) : '--'}
-        </Text>
-        <Text style={carplayStyles.speedUnit}>{unitLabel}</Text>
-      </View>
-      <View style={carplayStyles.sign}>
-        <Text style={carplayStyles.signLabel}>SPEED{'\n'}LIMIT</Text>
-        <Text style={carplayStyles.signValue}>
-          {s.displayLimit != null ? s.displayLimit : '--'}
-        </Text>
-      </View>
-    </View>
-  );
-}
-
-const carplayStyles = StyleSheet.create({
-  root: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-evenly',
-    paddingHorizontal: 32,
-  },
-  speedBlock: { alignItems: 'center', justifyContent: 'center' },
-  speedLabel: { color: '#8a97a7', fontSize: 22, fontWeight: '700', letterSpacing: 2 },
-  speedValue: { fontSize: 160, fontWeight: '800', lineHeight: 168 },
-  speedUnit: { color: '#8a97a7', fontSize: 24, fontWeight: '700', letterSpacing: 2 },
-  sign: {
-    backgroundColor: '#fff',
-    borderColor: '#000',
-    borderWidth: 8,
-    borderRadius: 20,
-    paddingVertical: 20,
-    paddingHorizontal: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: 220,
-  },
-  signLabel: {
-    color: '#000',
-    fontSize: 30,
-    fontWeight: '800',
-    textAlign: 'center',
-    lineHeight: 32,
-    letterSpacing: 1,
-  },
-  signValue: { color: '#000', fontSize: 130, fontWeight: '900', lineHeight: 140, marginTop: 4 },
-});
 
 // ---- Unit conversions ----
 const MPS_TO_MPH = 2.2369362921;
@@ -317,6 +225,190 @@ const DEFAULT_THRESHOLDS = [
 ];
 const STORAGE_KEY = '@speed_limit_thresholds';
 
+// Pure display math shared by the phone UI, the Live Activity and CarPlay.
+function computeDisplay(drive, prefs) {
+  const currentSpeed =
+    prefs.unit === 'mph' ? drive.speedMps * MPS_TO_MPH : drive.speedMps * MPS_TO_KMH;
+  const displayLimit = convertLimit(drive.limit, prefs.unit);
+  const isOver = displayLimit != null && currentSpeed > displayLimit + 1; // +1 tolerance
+
+  let speedColor = '#FFFFFF';
+  const overBy = displayLimit == null ? 0 : Math.round(currentSpeed) - displayLimit;
+  if (overBy > 0) {
+    // Highest applicable threshold wins
+    const sorted = [...prefs.thresholds].sort((a, b) => b.over - a.over);
+    const hit = sorted.find((t) => overBy >= t.over);
+    if (hit) speedColor = hit.color;
+  }
+  return { currentSpeed, displayLimit, isOver, speedColor };
+}
+
+const unitLabel = (unit) => (unit === 'mph' ? 'MPH' : 'KM/H');
+
+// ---- Drive store ----
+// Location + limit state lives at module level (not in <App>) because it is fed
+// by two sources: the foreground watchPositionAsync stream and the background
+// location task that keeps running while the phone is locked / on CarPlay. The
+// UI reads it with useSyncExternalStore.
+let drive = { speedMps: 0, accuracy: null, limit: null, limitLoading: false };
+let prefs = { unit: 'mph', thresholds: DEFAULT_THRESHOLDS };
+const driveListeners = new Set();
+
+function setDrive(patch) {
+  drive = { ...drive, ...patch };
+  driveListeners.forEach((l) => l());
+  syncLiveActivity();
+}
+function setPrefs(next) {
+  prefs = next;
+  syncLiveActivity();
+}
+const subscribeDrive = (cb) => {
+  driveListeners.add(cb);
+  return () => driveListeners.delete(cb);
+};
+const getDrive = () => drive;
+
+let lastLocationTs = 0;
+function handleLocation(loc) {
+  // Both sources can deliver the same fix; only process newer ones.
+  if (!loc || loc.timestamp <= lastLocationTs) return;
+  lastLocationTs = loc.timestamp;
+  const s = loc.coords.speed;
+  // expo-location returns m/s; can be negative or null if unknown
+  setDrive({
+    speedMps: s != null && s >= 0 ? s : 0,
+    accuracy: loc.coords.accuracy != null ? loc.coords.accuracy : null,
+  });
+  maybeFetchLimit(loc.coords.latitude, loc.coords.longitude);
+}
+
+// Throttle: never more often than every MIN_QUERY_MS; otherwise query once
+// moved >= 40 m or 15 s have passed. The floor matters now that the background
+// task keeps this running for whole drives (see the Throttling note in
+// CLAUDE.md — the proper fix is roadmap Phase 1).
+const MIN_QUERY_MS = 5000;
+let lastQueried = { lat: null, lon: null, t: 0 };
+let limitAbort = null;
+async function maybeFetchLimit(lat, lon) {
+  const now = Date.now();
+  if (now - lastQueried.t < MIN_QUERY_MS) return;
+  if (
+    lastQueried.lat != null &&
+    haversine(lastQueried.lat, lastQueried.lon, lat, lon) < 40 &&
+    now - lastQueried.t < 15000
+  ) {
+    return;
+  }
+  lastQueried = { lat, lon, t: now };
+
+  if (limitAbort) limitAbort.abort();
+  const controller = new AbortController();
+  limitAbort = controller;
+  setDrive({ limitLoading: true });
+  try {
+    const result = await fetchSpeedLimit(lat, lon, controller.signal);
+    setDrive({ limit: result });
+  } catch (e) {
+    // AbortError or network failure: keep the previous limit
+  } finally {
+    if (limitAbort === controller) setDrive({ limitLoading: false });
+  }
+}
+
+// ---- Live Activity (CarPlay Dashboard / Lock Screen / Dynamic Island) ----
+// Pushes are de-duplicated, plus a heartbeat so the activity's 30 s staleDate
+// doesn't expire while parked with an unchanged reading.
+const LIVE_HEARTBEAT_MS = 15000;
+let liveOn = false;
+let liveSig = '';
+let livePushedAt = 0;
+
+function liveState() {
+  const d = computeDisplay(drive, prefs);
+  return {
+    speed: drive.accuracy != null ? Math.round(d.currentSpeed) : null,
+    limit: d.displayLimit,
+    unit: unitLabel(prefs.unit),
+    speedColor: d.speedColor,
+    isOver: d.isOver,
+  };
+}
+
+function syncLiveActivity() {
+  if (!liveOn || !SpeedLimitActivity) return;
+  const state = liveState();
+  const sig = JSON.stringify(state);
+  const now = Date.now();
+  if (sig === liveSig && now - livePushedAt < LIVE_HEARTBEAT_MS) return;
+  liveSig = sig;
+  livePushedAt = now;
+  SpeedLimitActivity.update(state).catch(() => {});
+}
+
+// ---- Drive mode: background location + Live Activity ----
+const DRIVE_TASK = 'speed-limit-drive';
+
+// Must be defined at module scope so iOS can deliver updates while backgrounded.
+TaskManager.defineTask(DRIVE_TASK, ({ data, error }) => {
+  if (error || !data || !data.locations || data.locations.length === 0) return;
+  handleLocation(data.locations[data.locations.length - 1]);
+});
+
+const driveModeSupported = Platform.OS === 'ios' && SpeedLimitActivity != null;
+
+// Call from the foreground (ActivityKit only allows starting an activity then).
+async function startDriveMode() {
+  await Location.startLocationUpdatesAsync(DRIVE_TASK, {
+    accuracy: Location.Accuracy.BestForNavigation,
+    timeInterval: 1000,
+    distanceInterval: 0,
+    activityType: Location.ActivityType.AutomotiveNavigation,
+    pausesUpdatesAutomatically: false,
+    // Blue status-bar pill: lets When-In-Use permission keep running in the
+    // background without asking for Always.
+    showsBackgroundLocationIndicator: true,
+  });
+  if (SpeedLimitActivity.areActivitiesEnabled()) {
+    const state = liveState();
+    await SpeedLimitActivity.start(state);
+    liveSig = JSON.stringify(state);
+    livePushedAt = Date.now();
+    liveOn = true;
+  }
+}
+
+async function stopDriveMode() {
+  liveOn = false;
+  liveSig = '';
+  await SpeedLimitActivity.end().catch(() => {});
+  if (await Location.hasStartedLocationUpdatesAsync(DRIVE_TASK).catch(() => false)) {
+    await Location.stopLocationUpdatesAsync(DRIVE_TASK);
+  }
+}
+
+// ---- CarPlay (Driving Task: template-only) ----
+// Apple refused the Navigation entitlement, so the head unit can only show
+// Apple's templates. We show the limit + a pointer to the Live Activity, which
+// is where the custom sign graphic lives. Driving Task apps must not refresh
+// more than about every 10 s, so updates are rate-limited.
+const CARPLAY_MIN_UPDATE_MS = 10000;
+
+function carplayItems(limitText, driveOn) {
+  return [
+    { type: 'text', title: { text: limitText }, detailedText: { text: 'Speed limit' } },
+    {
+      type: 'text',
+      title: { text: driveOn ? 'Live speed on your Dashboard' : 'Drive mode is off' },
+      detailedText: {
+        text: driveOn
+          ? 'Your speed and the sign show as a Live Activity on the CarPlay Dashboard.'
+          : 'Open Speed Limit on your iPhone and tap CarPlay to start.',
+      },
+    },
+  ];
+}
+
 export default function App() {
   const [unit, setUnit] = useState('mph'); // 'mph' | 'kmh'
 
@@ -348,58 +440,24 @@ export default function App() {
   }, []);
 
   const [permStatus, setPermStatus] = useState('pending'); // pending | granted | denied
-  const [speedMps, setSpeedMps] = useState(0);
-  const [accuracyMps, setAccuracyMps] = useState(null);
-  const [limit, setLimit] = useState(null); // { value, unit, source } in source unit
-  const [limitLoading, setLimitLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
+  const [driveOn, setDriveOn] = useState(false);
+  const [driveBusy, setDriveBusy] = useState(false);
 
-  const subRef = useRef(null);
-  const lastQueriedRef = useRef({ lat: null, lon: null, t: 0 });
-  const abortRef = useRef(null);
-  const lastOverRef = useRef(false);
+  const { speedMps, accuracy: accuracyMps, limit, limitLoading } = useSyncExternalStore(
+    subscribeDrive,
+    getDrive
+  );
 
-  // ---- CarPlay ----
-  const carplayTemplateRef = useRef(null);
-  const carplayConnectedRef = useRef(false);
-
+  // Mirror display prefs into the module-level store (Live Activity reads them).
   useEffect(() => {
-    if (!HybridAutoPlay || !AutoPlayMapTemplate) return;
-
-    const onConnect = () => {
-      carplayConnectedRef.current = true;
-      // MapTemplate renders CarPlaySignScreen full-screen in the head-unit
-      // window. We don't use any navigation features — just the custom canvas.
-      const tpl = new AutoPlayMapTemplate({
-        component: CarPlaySignScreen,
-        onStopNavigation: () => {},
-      });
-      carplayTemplateRef.current = tpl;
-      tpl.setRootTemplate();
-    };
-
-    const onDisconnect = () => {
-      carplayConnectedRef.current = false;
-      carplayTemplateRef.current = null;
-    };
-
-    const cleanupConnect = HybridAutoPlay.addListener('didConnect', onConnect);
-    const cleanupDisconnect = HybridAutoPlay.addListener('didDisconnect', onDisconnect);
-
-    // If already connected when component mounts
-    if (HybridAutoPlay.isConnected()) {
-      onConnect();
-    }
-
-    return () => {
-      cleanupConnect();
-      cleanupDisconnect();
-    };
-  }, []);
+    setPrefs({ unit, thresholds });
+  }, [unit, thresholds]);
 
   // Request permission + start streaming location
   useEffect(() => {
     let cancelled = false;
+    let sub = null;
     (async () => {
       try {
         // Check existing status first — on iOS a prior denial means we must
@@ -428,23 +486,15 @@ export default function App() {
         }
         setPermStatus('granted');
 
-        const sub = await Location.watchPositionAsync(
+        sub = await Location.watchPositionAsync(
           {
             accuracy: Location.Accuracy.BestForNavigation,
             timeInterval: 1000,
             distanceInterval: 1,
           },
-          (loc) => {
-            const s = loc.coords.speed;
-            // expo-location returns m/s; can be negative or null if unknown
-            setSpeedMps(s != null && s >= 0 ? s : 0);
-            setAccuracyMps(loc.coords.accuracy != null ? loc.coords.accuracy : null);
-
-            const { latitude, longitude } = loc.coords;
-            maybeFetchLimit(latitude, longitude);
-          }
+          handleLocation
         );
-        subRef.current = sub;
+        if (cancelled) sub.remove();
       } catch (e) {
         setErrorMsg('Could not start location updates: ' + e.message);
       }
@@ -452,94 +502,119 @@ export default function App() {
 
     return () => {
       cancelled = true;
-      if (subRef.current) {
-        subRef.current.remove();
-        subRef.current = null;
-      }
-      if (abortRef.current) abortRef.current.abort();
+      if (sub) sub.remove();
+      if (limitAbort) limitAbort.abort();
     };
   }, []);
 
-  // Throttle: query if moved > 40 m or > 15 s since last query.
-  const maybeFetchLimit = useCallback(async (lat, lon) => {
-    const now = Date.now();
-    const last = lastQueriedRef.current;
-    if (
-      last.lat != null &&
-      haversine(last.lat, last.lon, lat, lon) < 40 &&
-      now - last.t < 15000
-    ) {
-      return;
-    }
-    lastQueriedRef.current = { lat, lon, t: now };
-
-    try {
-      if (abortRef.current) abortRef.current.abort();
-      const controller = new AbortController();
-      abortRef.current = controller;
-      setLimitLoading(true);
-      const result = await fetchSpeedLimit(lat, lon, controller.signal);
-      setLimit(result);
-    } catch (e) {
-      if (e.name !== 'AbortError') {
-        // Silent failure for network issues; display will show a dash
+  // Drive mode survives app restarts only as a stray background task / Live
+  // Activity. On launch: resume it if the location task is still running,
+  // otherwise clean up any leftover activity.
+  useEffect(() => {
+    if (!driveModeSupported || permStatus !== 'granted') return;
+    (async () => {
+      const running = await Location.hasStartedLocationUpdatesAsync(DRIVE_TASK).catch(() => false);
+      if (running) {
+        try {
+          await startDriveMode();
+          setDriveOn(true);
+        } catch (_) {
+          await stopDriveMode();
+        }
+      } else {
+        await SpeedLimitActivity.end().catch(() => {});
       }
+    })();
+  }, [permStatus]);
+
+  const toggleDriveMode = useCallback(async () => {
+    if (driveBusy) return;
+    setDriveBusy(true);
+    try {
+      if (driveOn) {
+        await stopDriveMode();
+        setDriveOn(false);
+      } else {
+        if (!SpeedLimitActivity.areActivitiesEnabled()) {
+          setErrorMsg('Live Activities are turned off for Speed Limit in Settings.');
+        }
+        await startDriveMode();
+        setDriveOn(true);
+      }
+    } catch (e) {
+      setErrorMsg('Could not start drive mode: ' + e.message);
+      await stopDriveMode();
+      setDriveOn(false);
     } finally {
-      setLimitLoading(false);
+      setDriveBusy(false);
     }
-  }, []);
+  }, [driveOn, driveBusy]);
 
-  // Derived display values
-  const currentSpeed =
-    unit === 'mph' ? speedMps * MPS_TO_MPH : speedMps * MPS_TO_KMH;
-  const displayLimit = convertLimit(limit, unit);
-  const isOver =
-    displayLimit != null && currentSpeed > displayLimit + 1; // +1 tolerance
-
-  // Compute speed text color from thresholds
-  const getSpeedColor = () => {
-    if (displayLimit == null) return '#fff';
-    const overBy = Math.round(currentSpeed) - displayLimit;
-    if (overBy <= 0) return '#fff';
-    // Sort thresholds descending so we match the highest applicable one
-    const sorted = [...thresholds].sort((a, b) => b.over - a.over);
-    for (const t of sorted) {
-      if (overBy >= t.over) return t.color;
-    }
-    return '#fff';
-  };
-  const speedColor = getSpeedColor();
+  const { currentSpeed, displayLimit, isOver, speedColor } = computeDisplay(
+    { speedMps, limit },
+    { unit, thresholds }
+  );
 
   // Haptic feedback on crossing the limit
+  const lastOverRef = useRef(false);
   useEffect(() => {
     if (isOver && !lastOverRef.current) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(
-        () => {}
-      );
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     }
     lastOverRef.current = isOver;
   }, [isOver]);
 
-  // Push live values into the CarPlay screen's store. CarPlaySignScreen renders
-  // in a separate React root, so it reads from the store rather than props. The
-  // store de-dupes internally, so running this on every render is cheap and
-  // won't flicker the head unit.
-  useEffect(() => {
-    pushCarplayState({
-      hasSpeed: permStatus === 'granted',
-      speed: currentSpeed,
-      unit,
-      displayLimit,
-      isOver,
-      speedColor,
-    });
-  });
+  // ---- CarPlay (InformationTemplate) ----
+  const [carplayTemplate, setCarplayTemplate] = useState(null);
+  const [carplayPushed, setCarplayPushed] = useState({ sig: '', at: 0 });
 
-  const bgColor = '#0b0d12';
+  useEffect(() => {
+    if (!HybridAutoPlay || !AutoPlayInformationTemplate) return;
+
+    const onConnect = () => {
+      const tpl = new AutoPlayInformationTemplate({
+        title: { text: 'Speed Limit' },
+        items: carplayItems('--', false),
+      });
+      tpl.setRootTemplate();
+      setCarplayPushed({ sig: '', at: 0 }); // force a push to the new template
+      setCarplayTemplate(tpl);
+    };
+    const onDisconnect = () => setCarplayTemplate(null);
+
+    const cleanupConnect = HybridAutoPlay.addListener('didConnect', onConnect);
+    const cleanupDisconnect = HybridAutoPlay.addListener('didDisconnect', onDisconnect);
+
+    // If already connected when component mounts
+    if (HybridAutoPlay.isConnected()) {
+      onConnect();
+    }
+
+    return () => {
+      cleanupConnect();
+      cleanupDisconnect();
+    };
+  }, []);
+
+  // Push the limit + drive-mode hint to CarPlay, at most every 10 s (Driving
+  // Task rule). A trailing timer delivers the latest value after the wait.
+  const carplayLimitText =
+    displayLimit != null ? `${displayLimit} ${unitLabel(unit)}` : '--';
+  useEffect(() => {
+    if (!carplayTemplate) return;
+    const sig = `${carplayLimitText}|${driveOn}`;
+    if (sig === carplayPushed.sig) return;
+    const wait = Math.max(0, carplayPushed.at + CARPLAY_MIN_UPDATE_MS - Date.now());
+    const timer = setTimeout(() => {
+      carplayTemplate.updateItems(carplayItems(carplayLimitText, driveOn)).catch(() => {});
+      setCarplayPushed({ sig, at: Date.now() });
+    }, wait);
+    return () => clearTimeout(timer);
+  }, [carplayTemplate, carplayLimitText, driveOn, carplayPushed]);
 
   const sourceLabel = limit
     ? (limit.source === 'here' ? 'Limit Data: HERE' : 'Limit Data: OpenStreetMap')
-    : 'Limit Data: HERE (primary), OpenStreetMap (fallback)';
+    : 'Limit Data: OpenStreetMap';
 
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
@@ -646,7 +721,32 @@ export default function App() {
                 : 'Acquiring GPS...'}
             </Text>
             <Text style={[styles.footerTextDim, !isLandscape && { color: '#999' }]}>{sourceLabel}</Text>
+            {errorMsg && permStatus === 'granted' ? (
+              <Text style={[styles.errorText, !isLandscape && { color: '#b91c1c' }]}>{errorMsg}</Text>
+            ) : null}
           </View>
+
+          {driveModeSupported && (
+            <TouchableOpacity
+              style={[
+                styles.driveBtn,
+                !isLandscape && styles.unitBtnLight,
+                driveOn && styles.driveBtnOn,
+              ]}
+              onPress={toggleDriveMode}
+              disabled={driveBusy}
+            >
+              <Text
+                style={[
+                  styles.unitBtnText,
+                  !isLandscape && { color: '#000' },
+                  driveOn && { color: '#fff' },
+                ]}
+              >
+                {driveOn ? 'CarPlay ON' : 'CarPlay'}
+              </Text>
+            </TouchableOpacity>
+          )}
 
           <TouchableOpacity
             onPress={() => {
@@ -754,6 +854,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     textAlign: 'center',
+  },
+  driveBtn: {
+    borderWidth: 1.5,
+    borderColor: '#fff',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    marginRight: 12,
+  },
+  driveBtnOn: {
+    backgroundColor: '#16a34a',
+    borderColor: '#16a34a',
   },
   gearText: {
     color: '#ccc',

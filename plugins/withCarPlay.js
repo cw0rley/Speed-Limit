@@ -70,24 +70,21 @@ function withAutoplayRootView(config) {
 }
 
 function withCarPlay(config) {
-  // 1. CarPlay NAVIGATION entitlement — required for CPMapTemplate, the only
-  //    CarPlay surface that lets a third-party app draw a full-screen custom
-  //    view (our big sign). NOTE: Apple must grant this via the CarPlay
-  //    entitlement request form (https://developer.apple.com/contact/carplay/)
-  //    and the provisioning profile must be regenerated before a build can be
-  //    signed with it. Until then, builds with this entitlement will fail to
-  //    sign — that's expected while the request is pending.
+  // 1. CarPlay DRIVING TASK entitlement (granted 2026-08-25). Template-only:
+  //    Information/List/Grid, updated no more than every ~10 s. Apple REFUSED
+  //    the Navigation entitlement (carplay-maps, Case-ID 21844634), so the
+  //    full-screen MapTemplate sign is not possible — custom graphics come from
+  //    the Live Activity in targets/live-activity instead. Being a CarPlay app
+  //    still matters: it lets the Live Activity open the app from CarPlay.
   config = withEntitlementsPlist(config, (c) => {
-    c.modResults['com.apple.developer.carplay-maps'] = true;
-    // Remove the old driving-task entitlement — the two are mutually exclusive
-    // (an app is one CarPlay category).
-    delete c.modResults['com.apple.developer.carplay-driving-task'];
+    c.modResults['com.apple.developer.carplay-driving-task'] = true;
+    // Mutually exclusive with driving-task (an app is one CarPlay category).
+    delete c.modResults['com.apple.developer.carplay-maps'];
     return c;
   });
 
   // 2. Scene configurations. The library's HeadUnitSceneDelegate handles the
-  //    CarPlay template scene for both Grid and Map templates, so this is
-  //    unchanged from the driving-task setup.
+  //    CarPlay template scene.
   config = withInfoPlist(config, (c) => {
     c.modResults.UIApplicationSceneManifest = {
       UIApplicationSupportsMultipleScenes: true,
@@ -112,7 +109,9 @@ function withCarPlay(config) {
     return c;
   });
 
-  // 3. AppDelegate hook so MapTemplate can mount RN root views into the car window.
+  // 3. AppDelegate hook the library uses to mount RN root views into the car
+  //    window. Not needed by InformationTemplate, but harmless and required if
+  //    the library ever renders a component-backed scene.
   config = withAutoplayRootView(config);
 
   return config;
