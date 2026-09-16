@@ -189,7 +189,8 @@ Apple **refused the Navigation entitlement** (Case-ID 21844634, 2026-09-16), so 
 custom CarPlay view is not possible. The app holds the **Driving Task** entitlement
 (`com.apple.developer.carplay-driving-task`, granted 2026-08-25) — template-only. Custom graphics
 come from a **Live Activity**, which needs no CarPlay entitlement and shows on the CarPlay
-Dashboard on iOS 26+. Work is on branch **`feat/carplay-live-activity`** (untested on device yet).
+Dashboard on iOS 26+. Work is on branch **`feat/carplay-live-activity`** — EAS build **26**
+(commit `ce8c026`, 2026-09-16) compiled and was submitted to TestFlight; not yet tested in a car.
 
 - **Head unit (template)**: `@iternio/react-native-auto-play` `InformationTemplate` with the
   limit + a drive-mode hint. Updates rate-limited to one per 10 s (Driving Task rule).
@@ -217,12 +218,15 @@ Dashboard on iOS 26+. Work is on branch **`feat/carplay-live-activity`** (untest
 
 - Bundle/package id: **`com.claytonrugby.speedlimit`**. App version **1.1.4**.
 - iOS `infoPlist`: `NSLocationWhenInUseUsageDescription`, `NSMicrophoneUsageDescription`
-  (CarPlay voice), `ITSAppUsesNonExemptEncryption: false`. `supportsTablet: false`.
+  (CarPlay voice), `ITSAppUsesNonExemptEncryption: false`, `NSSupportsLiveActivities: true`.
+  `supportsTablet: false`. `appleTeamId: N27NV97893`.
 - Android permissions: `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`.
-- Plugins: `expo-location` (with `locationWhenInUsePermission`) and `./plugins/withCarPlay`.
+- Plugins: `expo-location` (When-In-Use text, `isIosBackgroundLocationEnabled: true`, Always
+  text), `./plugins/withCarPlay`, `@bacons/apple-targets`.
 - EAS project id: `c659ab4d-9909-44da-b96b-00aad54ceb97`.
-- **Foreground-only location.** Background location / `UIBackgroundModes` are not configured;
-  there is no background/driving mode. Keep-awake covers the "heads-up on the dash" use case.
+- **Background location is iOS-only** (`UIBackgroundModes: location`, plus `fetch` added by a
+  dependency — consider removing before store review). It is only used while drive mode is on.
+  Android stays foreground-only.
 
 ## Build & submit (EAS — `eas.json`)
 
