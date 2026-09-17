@@ -7,7 +7,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "test": "node --test --no-warnings \"lookup/__tests__/*.test.mjs\""
+    "test": "node --test --no-warnings \"lookup/__tests__/*.test.mjs\" \"subscription/__tests__/*.test.mjs\""
   },
   "dependencies": {
     "@bacons/apple-targets": "^5.0.0",
@@ -15,6 +15,7 @@
     "@react-native-async-storage/async-storage": "2.2.0",
     "babel-preset-expo": "^55.0.17",
     "expo": "~54.0.0",
+    "expo-constants": "~18.0.14",
     "expo-haptics": "~15.0.8",
     "expo-keep-awake": "~15.0.8",
     "expo-location": "~19.0.8",
@@ -22,7 +23,8 @@
     "expo-task-manager": "~14.0.9",
     "react": "19.1.0",
     "react-native": "0.81.5",
-    "react-native-nitro-modules": "^0.35.9"
+    "react-native-nitro-modules": "^0.35.9",
+    "react-native-purchases": "^10.10.0"
   },
   "devDependencies": {
     "@babel/core": "^7.24.0",

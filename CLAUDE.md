@@ -143,6 +143,38 @@ the Worker's `/here-route` returns 410 (so re-enabling the HERE key can't resume
 builds), and the old KV namespace binding was dropped. **HERE may only return behind verified guardrails** (the user is open to HERE again, 2026-09-17 — but HERE's Base plan has no provider-side hard stop, only alert emails). The old
 `HERE_API_KEY` Worker secret can be deleted; the key itself should be revoked on the HERE account.
 
+## Subscription (`subscription/`) — RevenueCat
+
+Decided 2026-09-17: **subscription only**, **$2.99/month and $24.99/year**, **7-day free trial**
+(pending final confirmation), **existing free users do not keep free access**. Rollout: first a
+**notice** release (banner + early trial), then the **required** release (paywall).
+
+- **Config lives in `app.json` → `expo.extra.subscription`** (read by `subscription/config.js`):
+  `mode` = `off` | `notice` | `required`, `startDate` (`YYYY-MM-DD`, shown in the notice),
+  `iosApiKey` / `androidApiKey` (RevenueCat **public** SDK keys — safe to ship), `privacyUrl`.
+  Use empty strings for unset values (Expo surfaces `null` extras as `{}`); `config.js` only
+  accepts non-empty strings. Currently `mode: "off"` with nothing set.
+- **`store.js`** — RevenueCat (`react-native-purchases`, lazy-required) as an external store
+  (`useSubscription`): `initSubscriptions`, `loadOffering` (+ iOS trial-eligibility check),
+  `purchase`, `restore`, `manageSubscription`, `getAppUserId` (for future Worker gating).
+  Entitlement id **`pro`**. Status `disabled` (mode off / no key / no native module) never blocks
+  the app. **`paywallRequired()` fails open** while loading or on store errors so a paying user is
+  never locked out.
+- **`Paywall.js`** — full-screen (no close) when locked, or a dismissible sheet. Annual first
+  with "SAVE N%", per-month price, trial line only if eligible, CTA, renewal line, **Restore
+  Purchases · Terms of Use (Apple standard EULA) · Privacy Policy**, store-specific legal text
+  (App Review 3.1.1 / 3.1.2).
+- **`SubscriptionNotice.js`** — banner in `notice` mode ("Speed Limit becomes a subscription on
+  {date}…", "See plans" / "Not now"; snoozes 3 days).
+- **`offer.js`** — pure copy helpers (trial length from App Store intro price or Play free
+  phase, savings %, sort, legal text); tested in `subscription/__tests__` (part of `npm test`).
+- **`App.js`**: `initSubscriptions()` on mount; when `paywallRequired`, the paywall *is* the app,
+  drive mode is stopped and lookups are paused (`lookupsPaused`); Settings shows a
+  **Subscription** section (status, See plans / Manage subscription, Restore purchases).
+- **Not done yet:** RevenueCat project + App Store / Play products (user), hosted privacy policy
+  URL + updated policy text (still mentions HERE), notice start date, and **Worker gating of
+  `/limit` by entitlement** (send `getAppUserId()`; Worker checks RevenueCat REST).
+
 ## UI (phone)
 
 - Dark background (`#0b0d12`). Large current-speed readout (160pt portrait, 120pt landscape).
@@ -287,6 +319,7 @@ speed-limit/
   targets/live-activity/ # SwiftUI Live Activity extension (CarPlay Dashboard / Lock Screen)
   modules/speed-limit-activity/ # local Expo module: JS -> ActivityKit bridge
   lookup/                # speed-limit engine: OSM area match + TomTom fallback (+ __tests__)
+  subscription/          # RevenueCat store, Paywall, notice banner, offer copy (+ __tests__)
   proxy/
     worker.js            # Cloudflare Worker: TomTom /limit with D1 caps (no shared cache); /here-route = 410
     wrangler.toml        # Worker + D1 config, TOMTOM_ENABLED kill switch (secret set separately)

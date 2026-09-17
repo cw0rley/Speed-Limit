@@ -54,6 +54,13 @@
     "extra": {
       "eas": {
         "projectId": "c659ab4d-9909-44da-b96b-00aad54ceb97"
+      },
+      "subscription": {
+        "mode": "off",
+        "startDate": "",
+        "iosApiKey": "",
+        "androidApiKey": "",
+        "privacyUrl": ""
       }
     }
   }

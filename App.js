@@ -21,6 +21,15 @@ import { StatusBar } from 'expo-status-bar';
 import SpeedLimitActivity from './modules/speed-limit-activity';
 import { createLimitEngine } from './lookup/engine';
 import { convertLimit } from './lookup/maxspeed';
+import Paywall from './subscription/Paywall';
+import SubscriptionNotice from './subscription/SubscriptionNotice';
+import {
+  initSubscriptions,
+  manageSubscription,
+  paywallRequired,
+  restore as restorePurchases,
+  useSubscription,
+} from './subscription/store';
 
 // CarPlay — lazy-require to avoid errors in Expo Go.
 let HybridAutoPlay, AutoPlayInformationTemplate;
@@ -128,6 +137,9 @@ const DRIVE_IDLE_STOP_MS = 10 * 60 * 1000;
 const MOVING_MPS = 2;
 let lastMovingAt = 0;
 
+// True while the paywall blocks the app: no map downloads or TomTom calls.
+let lookupsPaused = false;
+
 let lastLocationTs = 0;
 function handleLocation(loc) {
   // Both sources can deliver the same fix; only process newer ones.
@@ -136,7 +148,9 @@ function handleLocation(loc) {
   const { latitude, longitude, speed, heading, accuracy } = loc.coords;
   const speedMps = speed != null && speed >= 0 ? speed : 0; // m/s; null/negative = unknown
   setDrive({ speedMps, accuracy: accuracy != null ? accuracy : null });
-  limitEngine.update({ lat: latitude, lon: longitude, heading, speed: speedMps, accuracy });
+  if (!lookupsPaused) {
+    limitEngine.update({ lat: latitude, lon: longitude, heading, speed: speedMps, accuracy });
+  }
 
   const now = Date.now();
   if (speedMps > MOVING_MPS) lastMovingAt = now;
@@ -281,6 +295,36 @@ function LookupStats() {
   );
 }
 
+// Settings -> "Subscription": status plus the store actions App Review expects
+// to be reachable outside the paywall.
+function SubscriptionSettings({ onSeePlans }) {
+  const sub = useSubscription();
+  if (sub.status === 'disabled') return null;
+  return (
+    <View style={styles.statsBox}>
+      <Text style={styles.statsTitle}>Subscription</Text>
+      <Text style={styles.statsLabel}>
+        {sub.active ? 'Active — thank you!' : 'Not subscribed'}
+      </Text>
+      <View style={styles.subActions}>
+        {sub.active ? (
+          <TouchableOpacity onPress={manageSubscription}>
+            <Text style={styles.statsReset}>Manage subscription</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity onPress={onSeePlans}>
+            <Text style={styles.statsReset}>See plans</Text>
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity onPress={restorePurchases} disabled={sub.busy}>
+          <Text style={styles.statsReset}>Restore purchases</Text>
+        </TouchableOpacity>
+      </View>
+      {sub.error ? <Text style={styles.errorText}>{sub.error}</Text> : null}
+    </View>
+  );
+}
+
 export default function App() {
   const [unit, setUnit] = useState('mph'); // 'mph' | 'kmh'
 
@@ -310,6 +354,18 @@ export default function App() {
     setThresholds(t);
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(t)).catch(() => {});
   }, []);
+
+  // ---- Subscription ----
+  const sub = useSubscription();
+  const locked = paywallRequired(sub);
+  const [paywallOpen, setPaywallOpen] = useState(false);
+  useEffect(() => {
+    initSubscriptions();
+  }, []);
+  useEffect(() => {
+    lookupsPaused = locked;
+    if (locked && drive.driveOn) stopDriveMode().catch(() => {});
+  }, [locked]);
 
   const [permStatus, setPermStatus] = useState('pending'); // pending | granted | denied
   const [errorMsg, setErrorMsg] = useState(null);
@@ -486,6 +542,16 @@ export default function App() {
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
 
+  // Subscription required and not active: the paywall is the whole app.
+  if (locked) {
+    return (
+      <View style={styles.container}>
+        <StatusBar style="light" />
+        <Paywall />
+      </View>
+    );
+  }
+
   // Waiting for permission — show a loading indicator
   if (permStatus === 'pending') {
     return (
@@ -523,6 +589,7 @@ export default function App() {
   return (
     <View style={[styles.container, { backgroundColor: '#0b0d12' }, isLandscape && styles.containerLandscape]}>
       <StatusBar style="light" />
+      <SubscriptionNotice onSeePlans={() => setPaywallOpen(true)} />
 
       {isLandscape ? (
         <View style={styles.landscapeBody}>
@@ -682,9 +749,24 @@ export default function App() {
               </TouchableOpacity>
             </View>
 
+            <SubscriptionSettings
+              onSeePlans={() => {
+                setSettingsVisible(false);
+                setPaywallOpen(true);
+              }}
+            />
             <LookupStats />
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={paywallOpen}
+        animationType="slide"
+        supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}
+        onRequestClose={() => setPaywallOpen(false)}
+      >
+        <Paywall onClose={() => setPaywallOpen(false)} onSubscribed={() => setPaywallOpen(false)} />
       </Modal>
     </View>
   );
@@ -949,6 +1031,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     fontVariant: ['tabular-nums'],
+  },
+  subActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
   },
   statsReset: {
     color: '#60a5fa',

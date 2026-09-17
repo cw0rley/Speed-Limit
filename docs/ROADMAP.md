@@ -39,8 +39,8 @@ _Decided 2026-09-16. Research notes (with sources) are summarized at the bottom.
 
 - [ ] Accept Apple **Paid Apps Agreement**, tax + banking; apply to **App Store Small Business Program** (15%). Set up Google Play payments profile.
 - [ ] Create subscription products (monthly + annual, with free-trial intro offer) in App Store Connect and Play Console.
-- [ ] Integrate **RevenueCat** (`react-native-purchases`, `react-native-purchases-ui` paywall). Needs a dev build.
-- [ ] Paywall must show price, period, auto-renew + cancel info, **Restore Purchases**, Terms of Use and Privacy Policy links (App Review 3.1.1 / 3.1.2).
+- [x] Integrate **RevenueCat** (`react-native-purchases`) with a custom paywall + notice banner (`subscription/`, 2026-09-17). Off by config until products and keys exist.
+- [x] Paywall shows price, period, trial, auto-renew + cancel info, **Restore Purchases**, Terms of Use and Privacy Policy links (App Review 3.1.1 / 3.1.2). Needs the hosted privacy URL in config.
 - [ ] Worker gates `/limit` on an active entitlement (RevenueCat REST `GET /subscribers/{id}`, cached in KV a few minutes; RevenueCat webhooks to invalidate).
 - [ ] Update `privacy-policy.html` (location sent to TomTom via our Worker; purchase data via RevenueCat) and store privacy labels.
 - [ ] Pricing: set price above worst-case monthly API cost per heavy user after the 15% store fee.
