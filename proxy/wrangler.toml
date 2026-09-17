@@ -24,11 +24,13 @@ crons = ["17 3 * * *"]
 
 [vars]
 # KILL SWITCH. "false" = TomTom is never called (/limit returns 503).
-# OFF until TomTom confirms licensing in writing (inquiry sent 2026-09-17) and
-# the cap drill in proxy/README.md has been run. Change to "true" + deploy.
-TOMTOM_ENABLED = "false"
+# ON since 2026-09-17 for TEST BUILDS ONLY (TOMTOM_ACCESS = "test", free
+# evaluation plan). Before any store release uses TomTom: written licensing
+# answer from TomTom (inquiry sent 2026-09-17) and TOMTOM_ACCESS = "subscribers".
+TOMTOM_ENABLED = "true"
 # Who may use /limit: "test" = only requests with X-Client-Token matching the
 # TEST_CLIENT_TOKEN secret (TestFlight builds from the `testflight` profile).
 TOMTOM_ACCESS = "test"
 # Daily TomTom calls. Can only LOWER the built-in ceiling of 600.
-DAILY_CAP = "600"
+# 200 while only test builds use it.
+DAILY_CAP = "200"

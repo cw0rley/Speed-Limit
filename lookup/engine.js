@@ -149,11 +149,11 @@ export function createLimitEngine({
     return !movingOnly && current.limit == null;
   }
 
-  function askTomTom(fix, store) {
+  function askTomTom(fix, store, road = null) {
     tomtomBusy = true;
     tomtomNextAt = now() + TOMTOM_MIN_INTERVAL_MS;
     stats.tomtomCalls += 1;
-    fetchTomTom(fix.lat, fix.lon, fix.heading, { signal: abort.signal })
+    fetchTomTom(fix.lat, fix.lon, fix.heading, { signal: abort.signal, road })
       .then((r) => {
         if (disposed) return;
         if (r.status === 'hit') {
@@ -229,7 +229,7 @@ export function createLimitEngine({
           const limit = wayTomTom.get(key);
           propose(`t:${key}`, limit && { ...limit, road: m.name });
         } else if (tomtomAllowed(f)) {
-          askTomTom(f, (limit) => boundedSet(wayTomTom, key, limit));
+          askTomTom(f, (limit) => boundedSet(wayTomTom, key, limit), m.highway);
         } else if (!tomtomBusy) {
           // TomTom unavailable (spacing / capped / off): don't carry the
           // previous road's limit onto this one.

@@ -134,8 +134,9 @@ function harness({ areaOk = true, tomtom = () => ({ status: 'hit', limit: { valu
       if (!areaOk) throw new Error('down');
       return syntheticArea();
     },
-    fetchTomTom: async () => {
+    fetchTomTom: async (lat, lon, heading, opts) => {
       calls.tomtom += 1;
+      calls.lastRoad = opts && opts.road;
       return tomtom();
     },
     onLimit: (l) => shown.push(l && `${l.value} ${l.unit} ${l.source}`),
@@ -162,6 +163,7 @@ test('engine: untagged road -> TomTom once per road, then cached', async () => {
   await h.drive(0, -200, 90); // area loads
   for (let n = -300; n <= 300; n += 15) await h.drive(n, 0, 0); // up Side Rd
   assert.equal(h.calls.tomtom, 1, 'one TomTom call for the whole road');
+  assert.equal(h.calls.lastRoad, 'residential', 'passes the matched road class');
   assert.equal(h.shown.at(-1), '25 mph tomtom');
 });
 
@@ -264,9 +266,10 @@ test('tomtom client: sends the token and rounded coordinates, maps statuses', as
   const ok = await fetchTomTomLimit(40.123456, -74.987654, 91.6, {
     clientToken: 'tkn',
     proxyUrl: 'https://proxy.test',
+    road: 'motorway',
     fetchImpl: async (url, opts) => { seen = { url, opts }; return fakeResponse(200, { value: 45, unit: 'mph', source: 'tomtom' }); },
   });
-  assert.equal(seen.url, 'https://proxy.test/limit?lat=40.1235&lon=-74.9877&heading=92');
+  assert.equal(seen.url, 'https://proxy.test/limit?lat=40.1235&lon=-74.9877&heading=92&road=motorway');
   assert.equal(seen.opts.headers['X-Client-Token'], 'tkn');
   assert.deepEqual(ok, { status: 'hit', limit: { value: 45, unit: 'mph', source: 'tomtom' } });
 

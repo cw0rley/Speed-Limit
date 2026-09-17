@@ -16,11 +16,12 @@ const TIMEOUT_MS = 5000;
 const BUILD_CLIENT_TOKEN = process.env.EXPO_PUBLIC_TEST_CLIENT_TOKEN || '';
 export const TOMTOM_TEST_BUILD = BUILD_CLIENT_TOKEN.length > 0;
 
+// `road` = OSM highway class of the matched road (e.g. 'motorway'), if known.
 export async function fetchTomTomLimit(
   lat,
   lon,
   heading,
-  { signal, fetchImpl, proxyUrl = PROXY_URL, clientToken = BUILD_CLIENT_TOKEN } = {}
+  { signal, fetchImpl, proxyUrl = PROXY_URL, clientToken = BUILD_CLIENT_TOKEN, road = null } = {}
 ) {
   if (!clientToken) return { status: 'backoff' }; // this build isn't allowed to use TomTom
 
@@ -28,6 +29,7 @@ export async function fetchTomTomLimit(
   // the privacy policy promises.
   let url = `${proxyUrl}/limit?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
   if (heading != null && heading >= 0) url += `&heading=${Math.round(heading)}`;
+  if (road) url += `&road=${encodeURIComponent(road)}`;
   try {
     const res = await fetchWithTimeout(
       url,

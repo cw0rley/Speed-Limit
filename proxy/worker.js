@@ -79,6 +79,25 @@ export function parseTomTomSpeedLimit(raw) {
   return { value, unit: m[2].toUpperCase() === 'MPH' ? 'mph' : 'kmh' };
 }
 
+// OSM highway class (sent by the app for the road it matched) -> TomTom
+// roadUse filter. Without it, reverse geocoding returns the nearest street
+// with addresses — on a motorway that is often a 25 mph side street.
+const ROAD_USE = {
+  motorway: 'LimitedAccess',
+  trunk: 'LimitedAccess,Arterial',
+  motorway_link: 'Ramp',
+  trunk_link: 'Ramp',
+  primary_link: 'Ramp',
+  secondary_link: 'Ramp',
+  tertiary_link: 'Ramp',
+  primary: 'Arterial',
+  secondary: 'Arterial',
+  tertiary: 'Arterial,LocalStreet',
+  unclassified: 'LocalStreet,Arterial',
+  residential: 'LocalStreet',
+  living_street: 'LocalStreet',
+};
+
 function parseQuery(url) {
   const lat = Number(url.searchParams.get('lat'));
   const lon = Number(url.searchParams.get('lon'));
@@ -92,10 +111,12 @@ function parseQuery(url) {
     heading != null && Number.isFinite(heading) && heading >= 0
       ? Math.round((((heading % 360) + 360) % 360) / 45) % 8
       : null;
+  const roadUse = ROAD_USE[url.searchParams.get('road')] || null;
   return {
     lat: Number(lat.toFixed(CELL_PRECISION)),
     lon: Number(lon.toFixed(CELL_PRECISION)),
     sector,
+    roadUse,
   };
 }
 
@@ -207,6 +228,12 @@ async function handleLimit(request, env, ctx, url) {
   upstream.searchParams.set('returnSpeedLimit', 'true');
   upstream.searchParams.set('radius', String(SEARCH_RADIUS_M));
   if (q.sector != null) upstream.searchParams.set('heading', String(q.sector * 45));
+  if (q.roadUse) {
+    upstream.searchParams.set(
+      'roadUse',
+      JSON.stringify(q.roadUse.split(','))
+    );
+  }
 
   let res;
   try {
