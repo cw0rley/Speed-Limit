@@ -225,9 +225,12 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
 ## Known gaps / next work
 
 - **v2 roadmap** — provider swap, subscription, CarPlay Live Activity: see `docs/ROADMAP.md`.
-- **TomTom fallback is written but not live** until the D1 database is created, the
-  `TOMTOM_API_KEY` secret is set and the Worker is deployed (steps in `proxy/README.md`), and an
-  app build ships the new lookup code.
+- **Worker deployed 2026-09-17** (version `1f86a1da`, commit `ba2506b`) with
+  `TOMTOM_ENABLED = "false"`: `/here-route` → 410 live, `/limit` → 503 "disabled", `/usage` live.
+  D1 `speed-limit-usage` (id `a75a26ec-…`) exists; `TOMTOM_API_KEY` secret is set. **TomTom stays
+  off** until TomTom and HERE answer the licensing inquiries (sent 2026-09-17, texts in
+  `cut-paste/provider-inquiry-*.txt`) and the cap drill has been run. No app build ships the new
+  lookup code yet (last TestFlight build is 26).
 - **CarPlay Navigation entitlement was REFUSED** (Case-ID 21844634, 2026-09-16) — the `MapTemplate`
   approach on `feat/carplay-grid-display` is dead. Custom graphics now go through a Live Activity /
   widget (SwiftUI, no entitlement). The
