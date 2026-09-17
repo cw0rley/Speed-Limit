@@ -43,7 +43,7 @@ Tables are created by the Worker on first use.
 4. Compare with the TomTom dashboard (should show the same number of requests).
 5. `npx wrangler deploy` (committed config, TomTom off) → token calls get `503 disabled`, nothing counted.
 
-Result: steps 2, 3 and 5 passed. TomTom answered **401** to every call — the stored key was rejected — so step 4 still needs a working key.
+Result: all steps passed. The first run hit a rotated key (TomTom 401 — not counted by TomTom); after the key was re-set, a real lookup returned a limit and the TomTom dashboard showed exactly the 2 successful calls.
 
 ## Checking usage
 

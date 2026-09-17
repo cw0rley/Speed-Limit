@@ -289,17 +289,18 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
 
 - **v2 roadmap** — provider swap, subscription, CarPlay Live Activity: see `docs/ROADMAP.md`.
 - **Worker live (2026-09-17): TomTom ON for test builds only** — `TOMTOM_ENABLED = "true"`,
-  `TOMTOM_ACCESS = "test"`, `DAILY_CAP = "200"`. Cap drill passed (token check, cap, kill switch);
-  TomTom dashboard count still to be compared. TomTom key was rotated once (old key → 401).
+  `TOMTOM_ACCESS = "test"`, `DAILY_CAP = "200"`. **Cap drill fully passed** (token check, cap,
+  kill switch, and the TomTom dashboard matched: 2 successful calls = "Reverse Geocoding 2 / 20 000";
+  6 earlier calls with the rotated key got 401 and don't count against the allowance).
+  TestFlight **build 28** (`testflight` profile, commit `2ec50eb`) carries the token.
 - **TomTom reverse-geocode accuracy concern:** on the NJ Turnpike bridge (OSM 55 mph) it returned
   **25 mph** (a nearby local street) without a road filter, and **no limit** with
   `roadUse=LimitedAccess`. The app now sends the matched OSM road class (`road=`), which the Worker
   maps to `roadUse`. Evaluate TomTom **Snap to Roads** (on the key) for highways next.
-- Earlier deploy note: `/here-route` → 410 live, `/usage` live.
-  D1 `speed-limit-usage` (id `a75a26ec-…`) exists; `TOMTOM_API_KEY` secret is set. **TomTom stays
-  off** until TomTom and HERE answer the licensing inquiries (sent 2026-09-17, texts in
-  `cut-paste/provider-inquiry-*.txt`) and the cap drill has been run. No app build ships the new
-  lookup code yet (last TestFlight build is 26).
+- `/here-route` → 410 live, `/usage` live. D1 `speed-limit-usage` (id `a75a26ec-…`);
+  secrets `TOMTOM_API_KEY`, `TEST_CLIENT_TOKEN`. **Store builds must not use TomTom** until
+  TomTom answers the licensing inquiry (sent 2026-09-17, text in
+  `cut-paste/provider-inquiry-tomtom.txt`; HERE was asked too).
 - **CarPlay Navigation entitlement was REFUSED** (Case-ID 21844634, 2026-09-16) — the `MapTemplate`
   approach on `feat/carplay-grid-display` is dead. Custom graphics now go through a Live Activity /
   widget (SwiftUI, no entitlement). The
