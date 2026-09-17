@@ -17,6 +17,11 @@ binding = "USAGE_DB"
 database_name = "speed-limit-usage"
 database_id = "a75a26ec-f2db-43b4-bacb-856275688cd2"
 
+# Daily clean-up of per-IP rate-limit rows (kept at most ~48 h). Cron
+# triggers are included in the Workers Free plan.
+[triggers]
+crons = ["17 3 * * *"]
+
 [vars]
 # KILL SWITCH. "false" = TomTom is never called (/limit returns 503).
 # OFF until TomTom confirms licensing in writing (inquiry sent 2026-09-17) and

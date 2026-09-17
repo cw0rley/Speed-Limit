@@ -90,11 +90,17 @@ async function ensureSchema(db) {
   schemaReady = true;
 }
 
+// Per-IP rows older than this are deleted (the privacy policy promises ~48 h).
+const IP_RETENTION_MS = 48 * 3600 * 1000;
+const ipCutoff = () => new Date(Date.now() - IP_RETENTION_MS).toISOString().slice(0, 13);
+
 // Atomically count one TomTom call against this IP's hour and the global day,
-// returning both new totals. Counted BEFORE the call is made.
+// returning both new totals. Counted BEFORE the call is made. Expired per-IP
+// rows are deleted in the same batch.
 async function countCall(db, ip) {
   const hour = new Date().toISOString().slice(0, 13);
-  const [ipRes, dayRes] = await db.batch([
+  const [, ipRes, dayRes] = await db.batch([
+    db.prepare('DELETE FROM ip_usage WHERE hour < ?1').bind(ipCutoff()),
     db
       .prepare(
         'INSERT INTO ip_usage (ip, hour, calls) VALUES (?1, ?2, 1) ' +
@@ -119,10 +125,11 @@ async function readCalls(db) {
   return row ? Number(row.calls) : 0;
 }
 
-// Old per-IP rows — run occasionally, best effort.
+// Daily cron (wrangler.toml [triggers]) — deletes expired per-IP rows even on
+// days with no TomTom calls.
 async function prune(db) {
-  const cutoff = new Date(Date.now() - 48 * 3600 * 1000).toISOString().slice(0, 13);
-  await db.prepare('DELETE FROM ip_usage WHERE hour < ?1').bind(cutoff).run();
+  await ensureSchema(db);
+  await db.prepare('DELETE FROM ip_usage WHERE hour < ?1').bind(ipCutoff()).run();
 }
 
 async function handleLimit(request, env, ctx, url) {
@@ -194,7 +201,6 @@ async function handleLimit(request, env, ctx, url) {
     parsed ? { ...parsed, source: 'tomtom' } : { value: null }
   );
 
-  if (Math.random() < 0.02) ctx.waitUntil(prune(db).catch(() => {}));
 
   return new Response(body, { headers: JSON_HEADERS });
 }
@@ -226,5 +232,9 @@ export default {
       default:
         return new Response('Not found', { status: 404 });
     }
+  },
+
+  async scheduled(event, env, ctx) {
+    if (env.USAGE_DB) ctx.waitUntil(prune(env.USAGE_DB));
   },
 };

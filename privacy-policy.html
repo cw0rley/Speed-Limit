@@ -5,46 +5,103 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Speed Limit - Privacy Policy</title>
 <style>
-  body { font-family: -apple-system, sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #333; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #333; }
   h1 { font-size: 24px; }
   h2 { font-size: 18px; margin-top: 30px; }
-  p { margin: 10px 0; }
+  p, li { margin: 8px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 12px 0; }
+  th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: #f5f5f5; }
   .date { color: #999; font-size: 14px; }
 </style>
 </head>
 <body>
 <h1>Speed Limit - Privacy Policy</h1>
-<p class="date">Last updated: April 21, 2026</p>
+<p class="date">Last updated: September 17, 2026</p>
 
 <h2>Overview</h2>
-<p>Speed Limit ("the App") displays your current driving speed and the posted speed limit for the road you are on. Your privacy is important to us. This policy explains what data the App accesses and how it is used.</p>
+<p>Speed Limit ("the App") shows your current driving speed and the posted speed limit for the road you are on, on your iPhone or Android phone and, on iPhone, on your Lock Screen and the Apple CarPlay Dashboard. The App is published by Patrick Cunningham ("we", "us"). This policy explains what data the App uses, where it goes, and how long it is kept.</p>
+<p>In short: we don't sell your data, we don't show ads, we don't use analytics or tracking, and the App has no user accounts. Your location is used only to show your speed and the speed limit, and we don't keep a record of where you have been.</p>
 
-<h2>Location Data</h2>
-<p>The App uses your device's GPS to determine your current speed and position. Your location is used to look up the speed limit of nearby roads via third-party services (HERE Technologies and OpenStreetMap/Overpass API). Location data is sent directly from your device to these services in real time and is not stored, collected, or transmitted to any server owned or operated by us.</p>
-
-<h2>Data We Collect</h2>
-<p>We do not collect, store, or share any personal data. The App does not have user accounts, analytics, or tracking of any kind. No data leaves your device except the location queries described above.</p>
-
-<h2>Third-Party Services</h2>
-<p>The App sends your approximate location (latitude and longitude) to the following services solely to retrieve speed limit information:</p>
+<h2>Location</h2>
+<p>The App uses your device's GPS to calculate your speed and to find the road you are on. Your speed is calculated on your device and is never sent anywhere.</p>
+<p>To look up speed limits, the App sends location information to the services below:</p>
 <ul>
-  <li><strong>HERE Technologies</strong> - <a href="https://legal.here.com/privacy">Privacy Policy</a></li>
-  <li><strong>OpenStreetMap / Overpass API</strong> - <a href="https://wiki.osmfoundation.org/wiki/Privacy_Policy">Privacy Policy</a></li>
+  <li><strong>OpenStreetMap map data (Overpass API).</strong> The App requests the roads in an area of roughly one mile around you, by sending the corners of that area. The roads are then matched to your position on your device. These requests go directly from your device to public Overpass servers (currently overpass-api.de and overpass.kumi.systems), which are operated by third parties.</li>
+  <li><strong>TomTom, through our server.</strong> When OpenStreetMap has no speed limit for your road, the App may send your approximate position (rounded to about 10 meters) and direction of travel to our server, which asks TomTom for the speed limit and returns the answer to your device. TomTom receives the position and direction but not your IP address or any identifier. Our server does not store your position.</li>
+</ul>
+<p>The App does not store a location history on your device or anywhere else.</p>
+
+<h2>Background location and CarPlay</h2>
+<p>On iPhone, when you turn on <em>Show on CarPlay</em>, the App keeps using your location while it is in the background so it can keep your speed and the speed limit up to date on the Lock Screen, in the Dynamic Island, and on the CarPlay Dashboard. iOS shows a blue location indicator while this is on. It stops when you turn it off, and the App turns it off automatically after about 10 minutes without movement. Location is used in the background only for the purposes described in this policy.</p>
+<p>The App displays information on CarPlay but does not read any data from your vehicle.</p>
+
+<h2>Our server</h2>
+<p>Speed-limit requests to TomTom go through a small server we run on Cloudflare Workers. To keep usage within limits and prevent abuse, the server records:</p>
+<ul>
+  <li>your IP address with a count of requests for the current hour, deleted within about 48 hours;</li>
+  <li>a total count of requests per day, with no link to any device or person.</li>
+</ul>
+<p>When subscriptions are required, the App may also send an anonymous subscription identifier (see below) so the server can confirm you have an active subscription. The server does not store your location or the speed limits it returns. As our hosting provider, Cloudflare processes these requests on our behalf.</p>
+
+<h2>Subscriptions and purchases</h2>
+<p>Subscriptions are sold through the Apple App Store or Google Play. Apple or Google handles your payment. We never see or receive your name, email address, or payment details.</p>
+<p>We use <strong>RevenueCat</strong> to manage subscriptions. RevenueCat receives a random, anonymous identifier created by the App, along with your purchase and subscription status from the store, your device platform and app version, and your IP address. We use this information only to unlock subscription features, restore purchases, and handle billing questions.</p>
+
+<h2>Data stored on your device</h2>
+<ul>
+  <li>Your settings (unit and speed-alert thresholds).</li>
+  <li>Lookup statistics shown in Settings: how long speed limits were available while driving, and how many map and speed-limit requests were made. These are totals only, with no locations, and they are not sent anywhere. You can reset them in Settings.</li>
+  <li>Whether you have dismissed the subscription announcement.</li>
+</ul>
+<p>Deleting the App removes this data.</p>
+
+<h2>Summary</h2>
+<table>
+  <tr><th>Data</th><th>Sent to</th><th>Why</th><th>Kept by us</th></tr>
+  <tr><td>Area around your position</td><td>OpenStreetMap / Overpass servers</td><td>Find nearby roads and their speed limits</td><td>Not received by us</td></tr>
+  <tr><td>Approximate position and direction</td><td>Our server, then TomTom</td><td>Speed limit where OpenStreetMap has none</td><td>Not stored</td></tr>
+  <tr><td>IP address</td><td>Our server (Cloudflare)</td><td>Rate limiting and abuse prevention</td><td>With an hourly request count, up to about 48 hours</td></tr>
+  <tr><td>Anonymous subscription ID and purchase status</td><td>RevenueCat (and our server, to check access)</td><td>Subscriptions and restoring purchases</td><td>Not stored by our server</td></tr>
+  <tr><td>Speed, settings, lookup statistics</td><td>Nowhere (stay on your device)</td><td>App features</td><td>Not received by us</td></tr>
+</table>
+
+<h2>Third-party services</h2>
+<ul>
+  <li>OpenStreetMap Foundation - <a href="https://osmfoundation.org/wiki/Privacy_Policy">Privacy Policy</a> (map data &copy; OpenStreetMap contributors, ODbL)</li>
+  <li>TomTom - <a href="https://www.tomtom.com/privacy/">Privacy Policy</a></li>
+  <li>Cloudflare - <a href="https://www.cloudflare.com/privacypolicy/">Privacy Policy</a></li>
+  <li>RevenueCat - <a href="https://www.revenuecat.com/privacy">Privacy Policy</a></li>
+  <li>Apple - <a href="https://www.apple.com/legal/privacy/">Privacy Policy</a></li>
+  <li>Google Play - <a href="https://policies.google.com/privacy">Privacy Policy</a></li>
+</ul>
+<p>Earlier versions of the App also sent your location to HERE Technologies to look up speed limits. Current versions no longer use HERE.</p>
+
+<h2>What we don't do</h2>
+<ul>
+  <li>No advertising, analytics, or tracking across apps or websites.</li>
+  <li>No selling or sharing of personal data for marketing.</li>
+  <li>No user accounts, and no collection of your name, email address, or contacts.</li>
 </ul>
 
-<h2>Background Location</h2>
-<p>If you grant background location permission, the App continues to access your location while running in the background to maintain speed and speed limit updates. This data is processed on your device and is not stored or shared.</p>
+<h2>Your choices</h2>
+<ul>
+  <li>You can turn location access off, or change it, in your device's Settings. The App cannot show your speed or speed limits without it.</li>
+  <li>You can turn off <em>Show on CarPlay</em> at any time to stop background location.</li>
+  <li>You can manage or cancel your subscription in your App Store or Google Play account settings.</li>
+  <li>To ask about, or request deletion of, data related to you, contact us at the address below. Because we don't keep location history or accounts, there is usually very little to delete. RevenueCat's subscription records can be deleted on request.</li>
+</ul>
 
-<h2>Data Storage</h2>
-<p>The App does not store any location history, trip data, or personal information on your device or externally.</p>
+<h2>Children's privacy</h2>
+<p>The App is intended for drivers and is not directed at children under 13. We do not knowingly collect personal information from children.</p>
 
-<h2>Children's Privacy</h2>
-<p>The App does not knowingly collect any data from children under 13.</p>
+<h2>Security</h2>
+<p>All requests the App makes are sent over encrypted connections (HTTPS). The TomTom API key is kept on our server and is never stored in the App.</p>
 
-<h2>Changes to This Policy</h2>
-<p>We may update this policy from time to time. Any changes will be reflected on this page with an updated date.</p>
+<h2>Changes to this policy</h2>
+<p>We may update this policy. Any changes will be posted on this page with a new "Last updated" date. If a change is significant, we will also mention it in the App's release notes.</p>
 
 <h2>Contact</h2>
-<p>If you have questions about this privacy policy, please contact us at: <strong>prcunningham@gmail.com</strong></p>
+<p>Patrick Cunningham<br>Email: <strong>prcunningham@gmail.com</strong></p>
 </body>
 </html>

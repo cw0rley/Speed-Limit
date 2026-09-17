@@ -9,7 +9,9 @@ export const PROXY_URL = 'https://speed-limit-proxy.prcunningham.workers.dev';
 const TIMEOUT_MS = 5000;
 
 export async function fetchTomTomLimit(lat, lon, heading, { signal, fetchImpl, proxyUrl = PROXY_URL } = {}) {
-  let url = `${proxyUrl}/limit?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`;
+  // 4 decimals (~11 m): all the precision a speed-limit lookup needs, and what
+  // the privacy policy promises.
+  let url = `${proxyUrl}/limit?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
   if (heading != null && heading >= 0) url += `&heading=${Math.round(heading)}`;
   try {
     const res = await fetchWithTimeout(url, {}, TIMEOUT_MS, signal, fetchImpl);
