@@ -44,7 +44,7 @@ _Decided 2026-09-16. Research notes (with sources) are summarized at the bottom.
 - [ ] Worker gates `/limit` on an active entitlement (RevenueCat REST `GET /subscribers/{id}`, cached in KV a few minutes; RevenueCat webhooks to invalidate).
 - [ ] Update `privacy-policy.html` (location sent to TomTom via our Worker; purchase data via RevenueCat) and store privacy labels.
 - [ ] Pricing: set price above worst-case monthly API cost per heavy user after the 15% store fee.
-- [ ] **Existing free users** — decide: grandfather them (iOS: RevenueCat `originalApplicationVersion` / AppTransaction; Android has no clean equivalent) or put everyone behind the paywall. Expect negative reviews if not handled.
+- [ ] **Existing free users** — decided: no free access. Soften it: an in-app notice in the release *before* the paywall ships, clear release notes, and the trial so current users can keep using it for a week before paying.
 
 ## Phase 3 — CarPlay Live Activity
 
@@ -63,10 +63,14 @@ _Prototype built on `feat/carplay-live-activity` (2026-09-16) with `@bacons/appl
 - [ ] Store listing copy + screenshots for subscription and CarPlay.
 - [ ] TestFlight / internal track with real drives; watch Worker call counts and TomTom usage daily for the first weeks.
 
+## Decisions (2026-09-17)
+
+- **Existing free users do NOT keep free access** — everyone hits the paywall after the update.
+- **Price: $2.99/month and $24.99/year.**
+- **Trial: 7-day free trial** (Apple introductory offer / Google free trial) on both plans — recommended; confirm before creating the products.
+
 ## Open questions
 
-1. Grandfather existing free users or not?
-2. Price points (monthly / annual) and trial length.
 3. Android: Android Auto was stripped after a Play rejection — any Android equivalent of the Live Activity (ongoing notification) wanted?
 4. Is OSM + TomTom coverage good enough in the areas you drive? Test before committing to launch.
 
