@@ -241,3 +241,38 @@ test('engine: restoreStats adds saved counters', async () => {
   assert.equal(s.since, 1);
   assert.equal(s.bogus, undefined);
 });
+
+// ---------------------------------------------------------------------------
+// TomTom client
+// ---------------------------------------------------------------------------
+import { fetchTomTomLimit } from '../tomtom.js';
+
+const fakeResponse = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+
+test('tomtom client: builds without a token never touch the network', async () => {
+  let called = false;
+  const r = await fetchTomTomLimit(40.1, -74.2, 90, {
+    clientToken: '',
+    fetchImpl: async () => { called = true; return fakeResponse(200, {}); },
+  });
+  assert.equal(r.status, 'backoff');
+  assert.equal(called, false);
+});
+
+test('tomtom client: sends the token and rounded coordinates, maps statuses', async () => {
+  let seen;
+  const ok = await fetchTomTomLimit(40.123456, -74.987654, 91.6, {
+    clientToken: 'tkn',
+    proxyUrl: 'https://proxy.test',
+    fetchImpl: async (url, opts) => { seen = { url, opts }; return fakeResponse(200, { value: 45, unit: 'mph', source: 'tomtom' }); },
+  });
+  assert.equal(seen.url, 'https://proxy.test/limit?lat=40.1235&lon=-74.9877&heading=92');
+  assert.equal(seen.opts.headers['X-Client-Token'], 'tkn');
+  assert.deepEqual(ok, { status: 'hit', limit: { value: 45, unit: 'mph', source: 'tomtom' } });
+
+  const call = (status, body = {}) =>
+    fetchTomTomLimit(1, 2, null, { clientToken: 't', fetchImpl: async () => fakeResponse(status, body) });
+  assert.equal((await call(200, { value: null })).status, 'miss');
+  for (const s of [403, 429, 503]) assert.equal((await call(s)).status, 'backoff');
+  assert.equal((await call(502)).status, 'error');
+});

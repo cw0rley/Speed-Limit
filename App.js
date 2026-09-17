@@ -21,6 +21,7 @@ import { StatusBar } from 'expo-status-bar';
 import SpeedLimitActivity from './modules/speed-limit-activity';
 import { createLimitEngine } from './lookup/engine';
 import { convertLimit } from './lookup/maxspeed';
+import { TOMTOM_TEST_BUILD } from './lookup/tomtom';
 import Paywall from './subscription/Paywall';
 import SubscriptionNotice from './subscription/SubscriptionNotice';
 import {
@@ -537,7 +538,8 @@ export default function App() {
   const sourceName = limit && limit.source === 'tomtom' ? 'TomTom' : 'OpenStreetMap';
   const statusLine =
     (accuracyMps != null ? `GPS ±${Math.round(accuracyMps)} m` : 'Acquiring GPS…') +
-    `  ·  Limits: ${sourceName}`;
+    `  ·  Limits: ${sourceName}` +
+    (TOMTOM_TEST_BUILD ? '  ·  TEST BUILD' : '');
 
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;

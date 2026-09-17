@@ -108,10 +108,19 @@ location for hours.
 1. TomTom account on the **free plan, no credit card, no top-up — ever**. Over the free allowance
    (20,000 reverse-geocode requests/month) TomTom returns `429` instead of charging (TomTom FAQ).
    Paid "Pay As You Grow" is prepaid top-ups.
-2. Worker **daily cap** `DAILY_CAP = 600` (≤18,600/month), counted atomically in **D1** before
-   each call (KV was rejected: reads can be ~60 s stale and would undercount).
+2. Worker **daily cap**: ceiling `MAX_DAILY_CAP = 600` (≤18,600/month); the `DAILY_CAP` var can
+   only lower it. Each call is **reserved** in **D1** (one transaction) before it is made, and
+   only if both the daily and per-IP counters have room — counters equal calls actually made.
+   (KV was rejected: reads can be ~60 s stale and would undercount.)
 3. Worker **per-IP cap** `PER_IP_HOURLY_CAP = 60`.
 4. **Kill switch**: `TOMTOM_ENABLED = "false"` in `proxy/wrangler.toml` + `npx wrangler deploy`.
+4b. **Test-builds-only access**: `TOMTOM_ACCESS = "test"` → only requests with header
+   `X-Client-Token` = Worker secret `TEST_CLIENT_TOKEN`. The app sends it only if built with the
+   EAS **`testflight`** profile (`eas.json`, `environment: "preview"`), whose EAS env var
+   `EXPO_PUBLIC_TEST_CLIENT_TOKEN` holds the same value (not in git; production env has none).
+   Builds without the token never call TomTom (`lookup/tomtom.js`), and show nothing extra;
+   token builds show "TEST BUILD" in the footer. **Never submit a `testflight`-profile build for
+   App Store review** (it would carry the token).
 5. **No shared server cache.** TomTom T&Cs §11.4 forbid caching "to serve multiple clients or
    users" (HERE's terms say the same, plus a 30-day max). Only the app's own per-device cache is
    allowed. (Also: the Workers Cache API does nothing on `workers.dev`.)

@@ -13,6 +13,10 @@
     },
     "production": {
       "autoIncrement": true
+    },
+    "testflight": {
+      "extends": "production",
+      "environment": "preview"
     }
   },
   "submit": {

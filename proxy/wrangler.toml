@@ -27,3 +27,8 @@ crons = ["17 3 * * *"]
 # OFF until TomTom confirms licensing in writing (inquiry sent 2026-09-17) and
 # the cap drill in proxy/README.md has been run. Change to "true" + deploy.
 TOMTOM_ENABLED = "false"
+# Who may use /limit: "test" = only requests with X-Client-Token matching the
+# TEST_CLIENT_TOKEN secret (TestFlight builds from the `testflight` profile).
+TOMTOM_ACCESS = "test"
+# Daily TomTom calls. Can only LOWER the built-in ceiling of 600.
+DAILY_CAP = "600"

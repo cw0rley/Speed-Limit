@@ -13,8 +13,9 @@ Keeps the TomTom API key off the phone and hard-limits how often TomTom is calle
 ## No-billing safeguards
 
 1. **TomTom free plan, no card, no top-up — ever.** Over the free allowance TomTom returns `429`; it doesn't charge.
-2. **Daily cap** (`DAILY_CAP = 600` → ≤18,600/month, under TomTom's 20,000 free), counted atomically in D1 *before* each call.
-3. **Per-IP cap** (`PER_IP_HOURLY_CAP = 60`).
+2. **Daily cap**: hard ceiling `MAX_DAILY_CAP = 600` (≤18,600/month, under TomTom's 20,000 free). The `DAILY_CAP` var can only lower it. A call is *reserved* in D1 before it is made, and only if both caps have room, so the counter equals the calls actually made.
+3. **Per-IP cap** (`PER_IP_HOURLY_CAP = 60`). Per-IP rows are deleted after ~48 h (every call + a daily cron).
+3b. **Access**: `TOMTOM_ACCESS = "test"` serves only requests with `X-Client-Token` = the `TEST_CLIENT_TOKEN` secret. Only app builds from the EAS `testflight` profile carry it (EAS env var `EXPO_PUBLIC_TEST_CLIENT_TOKEN`, `preview` environment). Everything else gets 403.
 4. **Kill switch**: set `TOMTOM_ENABLED = "false"` in `wrangler.toml`, then `npx wrangler deploy`.
 5. **No shared server cache** — TomTom T&Cs §11.4 forbid caching results to serve multiple users. The app caches answers for itself only.
 6. Any database error **denies** the call.
@@ -33,6 +34,16 @@ npx wrangler deploy
 ```
 
 Tables are created by the Worker on first use.
+
+## Cap drill (run 2026-09-17)
+
+1. Deploy with a tiny cap: `npx wrangler deploy --var TOMTOM_ENABLED:true --var DAILY_CAP:5`
+2. No token / wrong token → `403 not allowed`.
+3. 10 calls with the token → 5 reach TomTom, 5 get `daily cap reached`; `/usage` shows 5.
+4. Compare with the TomTom dashboard (should show the same number of requests).
+5. `npx wrangler deploy` (committed config, TomTom off) → token calls get `503 disabled`, nothing counted.
+
+Result: steps 2, 3 and 5 passed. TomTom answered **401** to every call — the stored key was rejected — so step 4 still needs a working key.
 
 ## Checking usage
 

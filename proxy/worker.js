@@ -16,6 +16,10 @@
 //      (KV reads can be stale for ~60 s, which would undercount).
 //   3. KILL SWITCH: set the TOMTOM_ENABLED var to "false" (wrangler.toml) and
 //      redeploy — TomTom is never called.
+//   3b. ACCESS: TOMTOM_ACCESS = "test" serves only requests carrying the
+//      X-Client-Token header equal to the TEST_CLIENT_TOKEN secret (TestFlight
+//      builds from the `testflight` EAS profile). Any other value denies all.
+//      ("subscribers" — RevenueCat entitlement check — is not built yet.)
 //   4. PER_IP_HOURLY_CAP: one device/IP can't burn the day's budget.
 //   5. NO shared cache of TomTom answers: TomTom T&Cs §11.4 forbid caching
 //      "for the purpose of scaling results to serve multiple clients or users".
@@ -29,8 +33,30 @@
 // wild call it; returning 410 here means re-enabling the HERE key can never
 // silently resume HERE billing.
 
-const DAILY_CAP = 600;
+// Hard ceiling. The DAILY_CAP var can lower it (e.g. 5 for a cap drill) but
+// never raise it: 600 × 31 = 18,600 < TomTom's 20,000 free requests/month.
+const MAX_DAILY_CAP = 600;
 const PER_IP_HOURLY_CAP = 60;
+
+function dailyCap(env) {
+  const n = Number(env.DAILY_CAP);
+  return Number.isFinite(n) && n >= 0 ? Math.min(Math.floor(n), MAX_DAILY_CAP) : MAX_DAILY_CAP;
+}
+
+// Constant-time string comparison.
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function clientAllowed(request, env) {
+  if (env.TOMTOM_ACCESS === 'test') {
+    return !!env.TEST_CLIENT_TOKEN && safeEqual(request.headers.get('X-Client-Token') || '', env.TEST_CLIENT_TOKEN);
+  }
+  return false;
+}
 const CELL_PRECISION = 4; // ~11 m
 const SEARCH_RADIUS_M = 30; // don't take a limit from a road that isn't this one
 
@@ -94,30 +120,38 @@ async function ensureSchema(db) {
 const IP_RETENTION_MS = 48 * 3600 * 1000;
 const ipCutoff = () => new Date(Date.now() - IP_RETENTION_MS).toISOString().slice(0, 13);
 
-// Atomically count one TomTom call against this IP's hour and the global day,
-// returning both new totals. Counted BEFORE the call is made. Expired per-IP
-// rows are deleted in the same batch.
-async function countCall(db, ip) {
+// Reserve one TomTom call, atomically (a D1 batch is one transaction): the
+// daily and per-IP counters are incremented only if BOTH are under their caps,
+// so the counters equal the calls actually made. Reserved BEFORE the call.
+// Expired per-IP rows are deleted in the same batch.
+// Returns { granted, dayCalls, ipCalls }.
+async function reserveCall(db, ip, cap) {
+  const day = today();
   const hour = new Date().toISOString().slice(0, 13);
-  const [, ipRes, dayRes] = await db.batch([
+  const results = await db.batch([
     db.prepare('DELETE FROM ip_usage WHERE hour < ?1').bind(ipCutoff()),
+    db.prepare('INSERT OR IGNORE INTO tomtom_usage (day, calls) VALUES (?1, 0)').bind(day),
+    db.prepare('INSERT OR IGNORE INTO ip_usage (ip, hour, calls) VALUES (?1, ?2, 0)').bind(ip, hour),
     db
       .prepare(
-        'INSERT INTO ip_usage (ip, hour, calls) VALUES (?1, ?2, 1) ' +
-          'ON CONFLICT(ip, hour) DO UPDATE SET calls = calls + 1 RETURNING calls'
+        'UPDATE tomtom_usage SET calls = calls + 1 WHERE day = ?1 AND calls < ?2 ' +
+          'AND (SELECT calls FROM ip_usage WHERE ip = ?3 AND hour = ?4) < ?5'
       )
+      .bind(day, cap, ip, hour, PER_IP_HOURLY_CAP),
+    // changes() = rows touched by the previous UPDATE (same connection).
+    db
+      .prepare('UPDATE ip_usage SET calls = calls + 1 WHERE ip = ?1 AND hour = ?2 AND changes() = 1')
       .bind(ip, hour),
     db
       .prepare(
-        'INSERT INTO tomtom_usage (day, calls) VALUES (?1, 1) ' +
-          'ON CONFLICT(day) DO UPDATE SET calls = calls + 1 RETURNING calls'
+        'SELECT (SELECT calls FROM tomtom_usage WHERE day = ?1) AS day_calls, ' +
+          '(SELECT calls FROM ip_usage WHERE ip = ?2 AND hour = ?3) AS ip_calls'
       )
-      .bind(today()),
+      .bind(day, ip, hour),
   ]);
-  return {
-    ipCalls: Number(ipRes.results[0]?.calls),
-    dayCalls: Number(dayRes.results[0]?.calls),
-  };
+  const granted = results[3].meta && results[3].meta.changes === 1;
+  const row = results[5].results[0] || {};
+  return { granted, dayCalls: Number(row.day_calls), ipCalls: Number(row.ip_calls) };
 }
 
 async function readCalls(db) {
@@ -143,6 +177,7 @@ async function handleLimit(request, env, ctx, url) {
   if (env.TOMTOM_ENABLED !== 'true') return json({ value: null, reason: 'disabled' }, 503);
   if (!env.TOMTOM_API_KEY) return json({ value: null, reason: 'not configured' }, 503);
   if (!env.USAGE_DB) return json({ value: null, reason: 'usage store missing' }, 503);
+  if (!clientAllowed(request, env)) return json({ value: null, reason: 'not allowed' }, 403);
   const db = env.USAGE_DB;
 
   try {
@@ -151,19 +186,18 @@ async function handleLimit(request, env, ctx, url) {
     return json({ value: null, reason: 'usage store unavailable' }, 503);
   }
 
-  // Stops 2 + 4: daily and per-IP caps, counted atomically before the call.
+  // Stops 2 + 4: daily and per-IP caps, reserved atomically before the call.
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const cap = dailyCap(env);
   let usage;
   try {
-    usage = await countCall(db, ip);
+    usage = cap > 0 ? await reserveCall(db, ip, cap) : { granted: false, dayCalls: 0, ipCalls: 0 };
   } catch (_) {
     return json({ value: null, reason: 'usage store unavailable' }, 503);
   }
-  if (!Number.isFinite(usage.dayCalls) || usage.dayCalls > DAILY_CAP) {
-    return json({ value: null, reason: 'daily cap reached' }, 429);
-  }
-  if (!Number.isFinite(usage.ipCalls) || usage.ipCalls > PER_IP_HOURLY_CAP) {
-    return json({ value: null, reason: 'rate limited' }, 429);
+  if (!usage.granted) {
+    const reason = usage.ipCalls >= PER_IP_HOURLY_CAP ? 'rate limited' : 'daily cap reached';
+    return json({ value: null, reason }, 429);
   }
 
   const upstream = new URL(
@@ -184,7 +218,7 @@ async function handleLimit(request, env, ctx, url) {
   if (res.status === 401 || res.status === 403 || res.status === 429) {
     // TomTom's own limit (free allowance used up) or a bad/blocked key. Not
     // cached; the app backs off for several minutes on this 429.
-    return json({ value: null, reason: 'provider limit' }, 429);
+    return json({ value: null, reason: `provider ${res.status}` }, 429);
   }
   if (!res.ok) return json({ value: null, reason: `upstream ${res.status}` }, 502);
 
@@ -212,10 +246,10 @@ async function handleUsage(env) {
   const calls = await readCalls(env.USAGE_DB);
   return json({
     date: today(),
-    tomtomCalls: Math.min(calls, DAILY_CAP),
-    deniedOverCap: Math.max(0, calls - DAILY_CAP),
-    dailyCap: DAILY_CAP,
+    tomtomCalls: calls,
+    dailyCap: dailyCap(env),
     enabled: env.TOMTOM_ENABLED === 'true',
+    access: env.TOMTOM_ACCESS || 'none',
   });
 }
 
