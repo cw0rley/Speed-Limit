@@ -1,71 +1,54 @@
-# Speed Limit — HERE API Proxy (Cloudflare Worker)
+# Speed Limit — proxy Worker (Cloudflare)
 
-A minimal Cloudflare Worker that proxies requests to the HERE Routing v8 API, keeping the API key server-side.
+Keeps the TomTom API key off the phone and hard-limits how often TomTom is called.
 
-## Setup
+## Endpoints
 
-1. Install Wrangler (Cloudflare's CLI):
+| Route | What it does |
+|---|---|
+| `GET /limit?lat=&lon=[&heading=]` | Speed limit from TomTom Reverse Geocode (`returnSpeedLimit=true`). Returns `{"value":45,"unit":"mph","source":"tomtom"}` or `{"value":null}`. `429` = capped / rate limited, `503` = switched off or not configured. |
+| `GET /usage` | Today's TomTom call count vs. the daily cap. |
+| `GET /here-route` | Always `410`. HERE is permanently off (it billed ~$1,000); old app builds still call this. |
 
-   ```bash
-   npm install -g wrangler
-   ```
+## No-billing safeguards
 
-2. Authenticate with Cloudflare:
+1. **TomTom free plan, no card, no top-up — ever.** Over the free allowance TomTom returns `429`; it doesn't charge.
+2. **Daily cap** (`DAILY_CAP = 600` → ≤18,600/month, under TomTom's 20,000 free), counted atomically in D1 *before* each call.
+3. **Per-IP cap** (`PER_IP_HOURLY_CAP = 60`).
+4. **Kill switch**: set `TOMTOM_ENABLED = "false"` in `wrangler.toml`, then `npx wrangler deploy`.
+5. **No shared server cache** — TomTom T&Cs §11.4 forbid caching results to serve multiple users. The app caches answers for itself only.
+6. Any database error **denies** the call.
+7. Everything runs on Cloudflare's free tier (Workers + D1). On the Workers **Free** plan, exceeding a limit makes requests fail — it doesn't bill. Check your plan: Cloudflare dashboard → Workers & Pages → Plans.
 
-   ```bash
-   npx wrangler login
-   ```
+The app adds its own spacing (at most one TomTom call per 30 s per device, 10-minute back-off after a `429`/`503`) and only asks TomTom when OpenStreetMap has no answer.
 
-3. Set the HERE API key as a secret:
-
-   ```bash
-   cd proxy
-   npx wrangler secret put HERE_API_KEY
-   ```
-
-   Paste your HERE API key when prompted.
-
-4. Deploy:
-
-   ```bash
-   npx wrangler deploy
-   ```
-
-   This will print the worker URL, e.g. `https://speed-limit-proxy.<your-subdomain>.workers.dev`.
-
-5. Update the app — set `PROXY_URL` in `App.js` to your worker URL:
-
-   ```js
-   const PROXY_URL = 'https://speed-limit-proxy.<your-subdomain>.workers.dev';
-   ```
-
-## How it works
-
-The worker exposes a single endpoint:
-
-```
-GET /here-route?transportMode=car&origin=LAT,LON&destination=LAT,LON&return=polyline&spans=speedLimit
-```
-
-It forwards only the allowed query parameters (`transportMode`, `origin`, `destination`, `return`, `spans`) to `https://router.hereapi.com/v8/routes`, appends the API key from the secret store, and returns the response.
-
-## Local development
+## One-time setup
 
 ```bash
 cd proxy
-npx wrangler dev
+npx wrangler d1 create speed-limit-usage     # paste the database_id into wrangler.toml
+npx wrangler secret put TOMTOM_API_KEY       # paste the TomTom key when prompted
+npx wrangler secret delete HERE_API_KEY      # optional cleanup; HERE is unused
+npx wrangler deploy
 ```
 
-This starts a local dev server (default `http://localhost:8787`). You can set the secret locally via a `.dev.vars` file:
+Tables are created by the Worker on first use.
 
+## Checking usage
+
+```bash
+curl https://speed-limit-proxy.prcunningham.workers.dev/usage
 ```
-HERE_API_KEY=your_key_here
+
+Also watch the TomTom dashboard (developer.tomtom.com → Dashboard → Analytics).
+
+## Local testing
+
+```bash
+cd proxy
+echo TOMTOM_API_KEY=your_key > .dev.vars   # .dev.vars is gitignored
+npx wrangler dev --local
 ```
 
-Do NOT commit `.dev.vars` — it is listed in `.gitignore`.
-
-## Security notes
-
-- The worker only allows specific query parameters to prevent misuse.
-- CORS headers are set to `*` for simplicity. For production, restrict `Access-Control-Allow-Origin` to your app's origin or remove it entirely (mobile apps don't enforce CORS).
-- Rate limiting can be added via Cloudflare's built-in rate limiting rules if needed.
+`--local` uses a local D1 database. Inspect or seed it with
+`npx wrangler d1 execute speed-limit-usage --local --command "SELECT * FROM tomtom_usage"`.

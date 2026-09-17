@@ -1,19 +1,24 @@
 name = "speed-limit-proxy"
 main = "worker.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2025-09-01"
 workers_dev = true
 
-# The HERE API key is stored as a secret, not in this file.
-# Set it with: npx wrangler secret put HERE_API_KEY
-# Then paste your key when prompted.
+# Secrets (never in this file):
+#   npx wrangler secret put TOMTOM_API_KEY
+# The old HERE_API_KEY secret is unused (/here-route returns 410); delete it with
+#   npx wrangler secret delete HERE_API_KEY
 
-# KV namespace used to cache HERE responses by geo-grid cell (see worker.js).
-# Create it once with:
-#   npx wrangler kv namespace create SPEED_CACHE
-# then paste the printed id below and redeploy.
-[[kv_namespaces]]
-binding = "SPEED_CACHE"
-id = "427035b6cb7140d09f9d0bebdb490398"
+# D1 database: TomTom call counters (daily cap, per-IP cap) + the speed-limit
+# cache. Created once with:
+#   npx wrangler d1 create speed-limit-usage
+# The Worker creates its tables itself on first use.
+[[d1_databases]]
+binding = "USAGE_DB"
+database_name = "speed-limit-usage"
+database_id = "a75a26ec-f2db-43b4-bacb-856275688cd2"
 
 [vars]
-# Non-secret environment variables can go here if needed in the future.
+# KILL SWITCH. "false" = TomTom is never called (/limit returns 503).
+# OFF until TomTom confirms licensing in writing (inquiry sent 2026-09-17) and
+# the cap drill in proxy/README.md has been run. Change to "true" + deploy.
+TOMTOM_ENABLED = "false"

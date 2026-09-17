@@ -13,3 +13,9 @@ web-build/
 
 # Local-only cut-and-paste content (submission answers, release notes, etc.) - not for git
 cut-paste/
+
+# Cloudflare Worker local state and secrets - never commit
+proxy/.dev.vars
+proxy/.wrangler/
+proxy/kv_err.txt
+proxy/kv_keys.json

@@ -11,8 +11,8 @@ Play Store; also targets **CarPlay** (full-screen custom sign) on iOS.
 > describes the app *as it is today*; update it as roadmap phases land.
 
 > **Orient here first.** This file is the source of truth for how the app is wired. The root
-> `README.md` is user-facing and lags behind (it still describes HERE-first lookup and a
-> "keep screen on" toggle that no longer exist as written — trust this file over it).
+> `README.md` is user-facing and lags behind (it still describes HERE lookup and a "keep screen
+> on" toggle that no longer exist — trust this file over it).
 
 ## Stack (current)
 
@@ -47,118 +47,79 @@ Play Store; also targets **CarPlay** (full-screen custom sign) on iOS.
 
 ## Speed-limit lookup
 
-`fetchSpeedLimit(lat, lon, signal)` in `App.js` tries two providers, **OSM first** (free) then
-**HERE** (paid) as a fallback — this order minimizes HERE transactions, the only lookups that
-cost money. Results are memoized in a session-level `cellCache` (`Map`, max 500 entries, FIFO
-eviction) keyed by a ~11 m grid cell (`cellKey`, `CELL_PRECISION = 4` decimal places), so
-repeat/looping routes hit no provider at all. Only real hits are cached — a `null` (which may
-just be a flaky Overpass endpoint) is not cached, so a valid HERE fallback can still run next pass.
+`fetchSpeedLimit(lat, lon, heading, signal)` in `App.js` asks **OpenStreetMap first** (free),
+then **TomTom** through the Cloudflare Worker only when OSM has no answer. It returns a limit,
+`null` ("no posted limit here" → display `--`), or `undefined` ("couldn't check right now" → keep
+showing the previous value).
+
+Session cache `cellCache` (`Map`, max 500, FIFO) keyed by a ~11 m cell (`CELL_PRECISION = 4`):
+hits are kept for the session; confirmed misses for 10 min (`MISS_TTL_MS`); nothing is cached
+when a provider was down or skipped.
 
 1. **Overpass / OpenStreetMap** (`fetchSpeedLimitOverpass`) — POSTs
-   `way(around:25,lat,lon)[highway][maxspeed]` to two public endpoints
-   (`overpass-api.de`, `overpass.kumi.systems`) in order. Picks the closest `way` by haversine
-   distance to its `center`, parses the `maxspeed` tag via `parseMaxspeed()`, returns
-   `{ value, unit, source: 'osm' }`. Tried first.
-2. **HERE Routing v8** (`fetchSpeedLimitHere`) — builds a synthetic ~10 m route
-   (origin → ~10 m north) with `spans=speedLimit`, reads the first span with a positive
-   `speedLimit`. HERE returns **m/s**; code converts to km/h (`* 3.6`). Returns
-   `{ value, unit: 'kmh', source: 'here' }` or `null`. **Fallback only — and currently
-   DISABLED (see the billing warning below). In practice the app is OSM-only right now.**
+   `way(around:25,lat,lon)[highway][maxspeed]` to `overpass-api.de`, then
+   `overpass.kumi.systems`, **4 s timeout each** (`fetchWithTimeout`). Picks the closest `way`,
+   parses `maxspeed` via `parseMaxspeed()`. If both endpoints fail, OSM is skipped for 2 min
+   (`OVERPASS_COOLDOWN_MS`). The public servers are frequently overloaded (504s / hangs were
+   observed 2026-09-17) — that is why the TomTom fallback exists. `overpass-api.de` also returns
+   `406` to requests without a real User-Agent (iOS sends one, curl doesn't).
+2. **TomTom** (`fetchSpeedLimitTomTom`) — `GET ${PROXY_URL}/limit?lat&lon&heading`. Client
+   spacing: at most one call per 30 s (`TOMTOM_MIN_INTERVAL_MS`); a `429`/`503` from the Worker
+   backs off 10 min (`TOMTOM_BACKOFF_MS`). Returns `{ value, unit, source: 'tomtom' }`.
 
-`parseMaxspeed` handles `"50"` (defaults to km/h — OSM convention), `"50 mph"`, `"30mph"`,
-`"50 km/h"`, `"50 kmh"`, `"50 kph"`. Ignores implicit values like `"RU:urban"`, `"walk"`,
-`"none"`, `"signals"` — returns `null` and the display shows `--`.
-
-`convertLimit(limit, displayUnit)` converts the raw provider result (in its own unit) to the
-user's selected display unit (mph↔kmh, `1.609344`).
+`parseMaxspeed` handles `"50"` (km/h, OSM convention), `"50 mph"`, `"30mph"`, `"50 km/h"`,
+`"50 kmh"`, `"50 kph"`; implicit values (`"RU:urban"`, `"walk"`, `"none"`, `"signals"`) → `null`.
+`convertLimit(limit, displayUnit)` converts to the display unit (`1.609344`).
 
 ### Throttling
 
-`handleLocation` calls the module-level `maybeFetchLimit`, gated: skip if less than **5 s**
-(`MIN_QUERY_MS`) since the last query; otherwise skip if within **40 m** of the last query
-**and** less than **15 s** since it. In-flight requests are aborted
-(`AbortController`) when a new query supersedes them.
+`handleLocation` calls the module-level `maybeFetchLimit`: skip if < **5 s** (`MIN_QUERY_MS`)
+since the last query; otherwise skip if within **40 m** **and** < **15 s** of it. In-flight
+requests are aborted when superseded. At highway speed this is still one lookup every 5 s — fine
+for free OSM, which is why TomTom has its own 30 s spacing plus server-side caps.
 
-> ⚠️ **This throttle barely throttles while driving — it is a root cause of the HERE billing
-> incident.** The gate fires a fetch when you've moved 40 m **OR** 15 s have passed. At highway
-> speed (~27 m/s) you cover 40 m in **~1.5 s**, so the 40 m branch dominates and the throttle
-> degraded to roughly **one fetch per 40 m of travel** — ~2,400 calls per hour of driving, not
-> the "~120 calls per 30-minute drive" older docs claimed. The 5 s floor (added with drive mode)
-> caps it at ~720/hr — still far too many for a paid provider. If HERE is ever re-enabled, this must
-> be changed to an AND-style gate with a real minimum-time floor.
+### TomTom + the proxy Worker (`proxy/`) — NO-BILLING DESIGN
 
-### ⚠️ HERE is disabled — it cost real money
+**Hard requirement from the user: they must never be billed again.** Safeguards (details in
+`proxy/README.md` and the header of `proxy/worker.js`):
 
-**The HERE service has been turned off.** Despite the "1,000 free transactions/day" assumption,
-HERE billed roughly **$1,000** of overage. In response the HERE service / key was **disabled**,
-so HERE lookups now fail and return `null`. The app effectively runs **OSM-only** today. The
-proxy and `fetchSpeedLimitHere` code are still present but inert.
+1. TomTom account on the **free plan, no credit card, no top-up — ever**. Over the free allowance
+   (20,000 reverse-geocode requests/month) TomTom returns `429` instead of charging (TomTom FAQ).
+   Paid "Pay As You Grow" is prepaid top-ups.
+2. Worker **daily cap** `DAILY_CAP = 600` (≤18,600/month), counted atomically in **D1** before
+   each call (KV was rejected: reads can be ~60 s stale and would undercount).
+3. Worker **per-IP cap** `PER_IP_HOURLY_CAP = 60`.
+4. **Kill switch**: `TOMTOM_ENABLED = "false"` in `proxy/wrangler.toml` + `npx wrangler deploy`.
+5. **No shared server cache.** TomTom T&Cs §11.4 forbid caching "to serve multiple clients or
+   users" (HERE's terms say the same, plus a 30-day max). Only the app's own per-device cache is
+   allowed. (Also: the Workers Cache API does nothing on `workers.dev`.)
+6. Any database error denies the call. Cloudflare Workers Free + D1 free tier: over-limit fails,
+   doesn't bill (confirm the account is on the Workers **Free** plan).
+7. **Open licensing questions for TomTom (get answers in writing before launch):** the free
+   licence says "Evaluation Use only" while the FAQ allows commercial use; the paid licence
+   excludes "Automotive Usage" (apps interacting with an in-car system — CarPlay may count);
+   prepaid packages **auto-renew by default** — auto-renew must be turned OFF for a hard stop.
 
-**Confirmed root cause** (from HERE usage export `REPORT-116521` + git timeline — three stacked
-faults, none of them a real spend cap):
+Worker routes: `GET /limit`, `GET /usage` (today's count vs cap), `GET /here-route` → **410**
+(permanently off). Unit-parsing of TomTom's `addresses[0].address.speedLimit`
+(`"25.00MPH"`, `"50.00KPH"`) is `parseTomTomSpeedLimit` (exported). Local test:
+`npx wrangler dev --local` with a `.dev.vars` (gitignored).
 
-1. **Wrong (paid) product.** All **420,787** billable transactions (Jun 2–Aug 31 2026; avg
-   4,837/day, 55 days over 1,000, peak **30,234** on Aug 7) were billed as HERE **"Time Aware
-   Routing"** (`routing-8:traffic`) — the paid traffic-aware routing product. The app's request
-   sends no `departureTime`, so it lands in the paid bucket. **The "1,000 free/day" tier never
-   applied to these calls.**
-2. **Throttle that doesn't throttle at speed.** The "40 m OR 15 s" gate degrades to ~1 call per
-   40 m while driving (~2,400/hr) — see the Throttling note above.
-3. **HERE was the primary provider, not a fallback.** Until commit `1953370` (Aug 5 2026,
-   "Cut HERE cost (OSM-first + KV cache)") the app queried HERE *first* on every gated tick.
-   Pre-fix (Jun 2–Aug 4) = **260,123** transactions.
+**Do not** raise `DAILY_CAP` above the free allowance, add a payment method to TomTom, or route
+around the Worker (no TomTom key in the app).
 
-**The remediation did not stop it.** After the Aug 5 fix commit, **160,664** more transactions
-were billed and the single biggest day (30,234) was **Aug 7 — two days after the fix**. Consistent
-with the proxy KV cache never populating (`kv_keys.json` was empty) and/or the fixed build not
-being deployed to the phone yet (a commit is not a released build). Decompressed report saved at
-`C:\Users\pat\Downloads\REPORT-116521.txt`.
+### HERE — removed after ~$1,000 of billing (history)
 
-**Enforcement:** `App.js` has a hard kill switch — `const HERE_ENABLED = false;` — and
-`fetchSpeedLimitHere` returns `null` immediately when it's false, so HERE is off in *code*, not
-just via a disabled account key. This prevents an account-key re-enable from silently resuming
-billing.
-
-**Do not silently re-enable HERE** (i.e. don't flip `HERE_ENABLED` to `true`). If you ever bring
-it back, treat the free tier as *not* safe: the "billing card on file, never charged unless
-exceeded" assumption was wrong and cost $1,000. Any re-enable needs a hard spend cap / usage
-alarm on the HERE account first, the null-result caching gap fixed (see below), and the proxy's
-KV cache verified as working (`kv_keys.json` was empty — the cache may never have populated).
-
-### HERE API key + Cloudflare Worker proxy (inert while HERE is disabled)
-
-The app talks to a deployed **Cloudflare Worker** rather than HERE directly:
-
-```js
-const PROXY_URL = 'https://speed-limit-proxy.prcunningham.workers.dev';
-```
-
-When `PROXY_URL` is set, HERE calls go to `${PROXY_URL}/here-route?...`. The embedded
-`HERE_API_KEY` constant in `App.js` is now only a local-dev fallback (used when `PROXY_URL` is
-null). The real key lives **server-side as a Worker secret**, not in the app.
-
-The proxy source is in **`proxy/`**:
-- `proxy/worker.js` — validates the path (`/here-route`) and method (GET), whitelists params
-  (`transportMode`, `origin`, `destination`, `return`, `spans`), injects the `HERE_API_KEY`
-  secret, forwards to `router.hereapi.com/v8/routes`, and **caches responses in Workers KV**
-  keyed by a rounded geo-grid cell (`CACHE_PRECISION = 4`, ~11 m) for **30 days**
-  (`CACHE_TTL_SECONDS`). Only `response.ok` bodies are cached (via `ctx.waitUntil`), so
-  transient errors don't stick. *Intended* effect: a given cell costs at most one HERE
-  transaction/month — but this apparently never worked in practice (`kv_keys.json` was empty, so
-  the KV cache may have been mis-bound or never writing). **Verify the cache actually populates
-  before trusting it.**
-- `proxy/wrangler.toml` — Worker name `speed-limit-proxy`, KV binding `SPEED_CACHE`
-  (id `427035b6cb7140d09f9d0bebdb490398`).
-- Deploy: `cd proxy && npx wrangler deploy`. Set the secret once with
-  `npx wrangler secret put HERE_API_KEY`. Create the KV namespace once with
-  `npx wrangler kv namespace create SPEED_CACHE`.
-- `proxy/.wrangler/`, `proxy/kv_err.txt`, `proxy/kv_keys.json` are local artifacts (gitignored /
-  untracked scratch), not part of the deploy.
-
-HERE's "free tier: 1,000 transactions/day" was **not** safe in practice — the calls were billed
-as paid Time Aware Routing, so the free tier never applied (see the root cause above). What is
-still **unexplained** is why billing continued after the Aug 5 OSM-first fix (empty KV cache
-and/or the fix not yet shipped to phones are the leading theories).
+HERE Routing v8 billed ~$1,000 (420,787 transactions Jun 2–Aug 31 2026, usage export
+`REPORT-116521`, saved at `C:\Users\pat\Downloads\REPORT-116521.txt`). Root causes: calls without
+`departureTime` were billed as paid **Time Aware Routing** (the "1,000 free/day" tier never
+applied); the old "40 m OR 15 s" throttle fired ~2,400 times/hour at highway speed; HERE was the
+primary provider until commit `1953370` (Aug 5). Billing continued after that fix (160,664 more
+transactions, peak 30,234 on Aug 7) — most likely old app builds still calling the proxy, and/or
+the KV cache never populating. **Now:** all HERE code and the embedded key are gone from the app,
+the Worker's `/here-route` returns 410 (so re-enabling the HERE key can't resume billing from old
+builds), and the old KV namespace binding was dropped. **HERE may only return behind verified guardrails** (the user is open to HERE again, 2026-09-17 — but HERE's Base plan has no provider-side hard stop, only alert emails). The old
+`HERE_API_KEY` Worker secret can be deleted; the key itself should be revoked on the HERE account.
 
 ## UI (phone)
 
@@ -179,9 +140,10 @@ and/or the fix not yet shipped to phones are the leading theories).
 - **Permission states**: `pending` (spinner), `denied` (full-screen message + "Open Settings"
   deep link), `granted` (the live UI). iOS re-denial is detected via
   `getForegroundPermissionsAsync().canAskAgain === false`.
-- Footer also shows GPS accuracy (`GPS +/- N m`) and the data source of the current limit
-  (`Limit Data: HERE` / `Limit Data: OpenStreetMap`, or the fallback-chain note before the
-  first successful fetch).
+- **Footer** (two rows): a one-line status (`GPS ±N m · Limits: OpenStreetMap|TomTom`, plus any
+  error), then `[MPH]  [Show on CarPlay]  [⚙]`. The "Show on CarPlay" button is drive mode (see
+  CarPlay). The user is still deciding whether it should stay a button or become automatic —
+  leave it as a button until they say otherwise.
 
 ## CarPlay (iOS)
 
@@ -263,8 +225,9 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
 ## Known gaps / next work
 
 - **v2 roadmap** — provider swap, subscription, CarPlay Live Activity: see `docs/ROADMAP.md`.
-- **Throttle must be fixed** before any paid provider is used (40 m OR 15 s → ~2,400 calls/hr at
-  speed). Also cache negative (OSM-miss) results so unmapped roads don't hammer the fallback.
+- **TomTom fallback is written but not live** until the D1 database is created, the
+  `TOMTOM_API_KEY` secret is set and the Worker is deployed (steps in `proxy/README.md`), and an
+  app build ships the new lookup code.
 - **CarPlay Navigation entitlement was REFUSED** (Case-ID 21844634, 2026-09-16) — the `MapTemplate`
   approach on `feat/carplay-grid-display` is dead. Custom graphics now go through a Live Activity /
   widget (SwiftUI, no entitlement). The
@@ -273,11 +236,7 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
   background mode (would need a foreground service + `ACCESS_BACKGROUND_LOCATION`).
 - **No trip history / max-speed recorder.** Would be a ring buffer of `(t, speed, lat, lon)`.
 - **No speed smoothing.** Raw OS speed jitters near zero; a ~1 s EMA would feel nicer.
-- **HERE is disabled after ~$1,000 of overage** (see the billing warning). The app is OSM-only
-  in practice. Deciding whether to re-enable HERE (with a hard spend cap) or replace it with a
-  different paid fallback is an open decision.
-- **HERE key still embedded as a dev fallback** in `App.js`. The proxy is the real path;
-  the literal key should be removed / rotated (and it's tied to the account that got billed).
+- **HERE is gone** (see history above). Revoke the old key on the HERE account.
 
 ## Running
 
@@ -303,8 +262,9 @@ speed-limit/
   targets/live-activity/ # SwiftUI Live Activity extension (CarPlay Dashboard / Lock Screen)
   modules/speed-limit-activity/ # local Expo module: JS -> ActivityKit bridge
   proxy/
-    worker.js            # Cloudflare Worker: HERE proxy + 30-day KV cache
-    wrangler.toml        # Worker + KV config (secret HERE_API_KEY set separately)
+    worker.js            # Cloudflare Worker: TomTom /limit with D1 caps + cache; /here-route = 410
+    wrangler.toml        # Worker + D1 config, TOMTOM_ENABLED kill switch (secret set separately)
+    README.md            # setup, safeguards, usage check
   assets/                # icon/splash/favicon + store screenshots
   brand-kit/             # icon/splash source SVGs + generate.js
   carplay-signs/         # pre-rendered sign PNGs (retired Grid-template approach)

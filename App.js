@@ -37,33 +37,56 @@ const MPS_TO_MPH = 2.2369362921;
 const MPS_TO_KMH = 3.6;
 
 // ---- Speed limit providers ----
-// Each provider returns { value: number, unit: 'mph' | 'kmh', source: 'here' | 'osm' }
-// or null. The main fetchSpeedLimit() tries OSM/Overpass first (free, open) and
-// only falls back to HERE (paid past the free tier) where OSM has no maxspeed.
-// This keeps HERE transactions — the thing that costs money — to a minimum.
+// Each provider returns { value: number, unit: 'mph' | 'kmh', source: 'osm' | 'tomtom' }
+// or null. fetchSpeedLimit() tries OpenStreetMap/Overpass first (free), and only
+// asks TomTom (via our Cloudflare Worker) where OSM has no maxspeed or is down.
+//
+// HERE was removed after it billed ~$1,000 (see CLAUDE.md). The Worker's old
+// /here-route now returns 410, and there is no HERE key in the app anymore.
+//
+// TomTom can't bill: the account is on the free plan with no card, and the
+// Worker hard-caps calls per day and per device (proxy/worker.js). The client
+// also spaces TomTom calls out (TOMTOM_MIN_INTERVAL_MS) so one drive doesn't eat
+// the shared daily budget.
 
-// ⚠️ HERE IS INTENTIONALLY DISABLED. The HERE "free tier" billed ~$1,000 in
-// overage (two ~$500 charges) despite the throttle + cache "limits", which had
-// gaps and never included a real hard spend cap. HERE stays OFF via this kill
-// switch until a proper cap is in place and the decision to re-enable is made.
-// DO NOT flip this to true without a hard spend cap on the HERE account first.
-// See CLAUDE.md → "HERE is disabled" and memory: here-billing-incident.
-const HERE_ENABLED = false;
-
-// Get a key at https://developer.here.com. The free "Base" plan allows 1,000
-// transactions/day. For production: proxy this through a small backend — API
-// keys shipped inside a mobile app can be extracted by anyone who installs it.
-const HERE_API_KEY = '6jTbJVWZkUP4tAtJ-mVBeS24nhj-vs_UD0XVkOK44y4';
-
-// Set this to your deployed Cloudflare Worker URL to proxy HERE API requests
-// (keeps the API key server-side). Leave null to call HERE directly (local dev).
-// Example: 'https://speed-limit-proxy.your-subdomain.workers.dev'
 const PROXY_URL = 'https://speed-limit-proxy.prcunningham.workers.dev';
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
+// The public Overpass servers are often overloaded (504s / hangs). Give each
+// endpoint a short budget, and after a failure skip OSM for a while so lookups
+// go straight to the fallback instead of waiting on dead servers.
+const OVERPASS_TIMEOUT_MS = 4000;
+const OVERPASS_COOLDOWN_MS = 2 * 60 * 1000;
+let overpassDownUntil = 0;
+
+const TOMTOM_TIMEOUT_MS = 5000;
+const TOMTOM_MIN_INTERVAL_MS = 30 * 1000;
+const TOMTOM_BACKOFF_MS = 10 * 60 * 1000; // after the Worker says capped / off
+let tomtomNextAllowed = 0;
+
+// fetch() with its own timeout, still honouring the caller's abort signal.
+async function fetchWithTimeout(url, options, timeoutMs, signal) {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', onAbort);
+  }
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    // Re-throw the caller's abort as-is; turn our own timeout into a plain error.
+    if (signal && signal.aborted) throw e;
+    throw new Error('timeout');
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onAbort);
+  }
+}
 
 function parseMaxspeed(raw) {
   if (!raw) return null;
@@ -79,24 +102,31 @@ function parseMaxspeed(raw) {
   return null;
 }
 
+// Returns { status: 'hit', limit } | { status: 'miss' } | { status: 'down' }.
+// 'miss' = OSM answered but has no usable maxspeed here.
 async function fetchSpeedLimitOverpass(lat, lon, signal) {
-  // Query ways with highway+maxspeed near the point, ordered implicitly.
+  if (Date.now() < overpassDownUntil) return { status: 'down' };
+
   const radius = 25; // meters
-  const query = `[out:json][timeout:8];
+  const query = `[out:json][timeout:5];
 way(around:${radius},${lat},${lon})[highway][maxspeed];
 out tags center 1;`;
 
   for (const endpoint of OVERPASS_ENDPOINTS) {
     try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'data=' + encodeURIComponent(query),
-        signal,
-      });
+      const res = await fetchWithTimeout(
+        endpoint,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'data=' + encodeURIComponent(query),
+        },
+        OVERPASS_TIMEOUT_MS,
+        signal
+      );
       if (!res.ok) continue;
       const data = await res.json();
-      if (!data.elements || data.elements.length === 0) return null;
+      if (!data.elements || data.elements.length === 0) return { status: 'miss' };
 
       // Pick the closest element to (lat, lon) by great-circle distance on the center.
       let best = null;
@@ -110,86 +140,92 @@ out tags center 1;`;
           best = el;
         }
       }
-      if (!best || !best.tags || !best.tags.maxspeed) return null;
-      const parsed = parseMaxspeed(best.tags.maxspeed);
-      return parsed ? { ...parsed, source: 'osm' } : null;
+      const parsed = best && best.tags ? parseMaxspeed(best.tags.maxspeed) : null;
+      return parsed ? { status: 'hit', limit: { ...parsed, source: 'osm' } } : { status: 'miss' };
     } catch (e) {
       if (e.name === 'AbortError') throw e;
-      // try next endpoint
+      // timeout / network error: try the next endpoint
     }
   }
-  return null;
+  overpassDownUntil = Date.now() + OVERPASS_COOLDOWN_MS;
+  return { status: 'down' };
 }
 
-// HERE Routing v8 returns speedLimit (in m/s) per route span. We construct a
-// minimal ~10 m route from (lat, lon) to a nearby point, then read the
-// speedLimit of the first span that has one.
-async function fetchSpeedLimitHere(lat, lon, signal) {
-  // Hard kill switch — HERE is disabled after a ~$1,000 billing incident. This
-  // makes "off" a code fact, not just a disabled account key, so re-enabling the
-  // key can't silently resume billing. See HERE_ENABLED above.
-  if (!HERE_ENABLED) return null;
-  if (!PROXY_URL && (!HERE_API_KEY || HERE_API_KEY.startsWith('YOUR_'))) return null;
+// Returns { status: 'hit', limit } | { status: 'miss' } | { status: 'skipped' }.
+async function fetchSpeedLimitTomTom(lat, lon, heading, signal) {
+  const now = Date.now();
+  if (!PROXY_URL || now < tomtomNextAllowed) return { status: 'skipped' };
+  tomtomNextAllowed = now + TOMTOM_MIN_INTERVAL_MS;
 
-  const dLat = 0.00009; // ~10 m north
-  const lat2 = lat + dLat;
-  const lon2 = lon;
-
-  const params =
-    `?transportMode=car&origin=${lat},${lon}&destination=${lat2},${lon2}` +
-    '&return=polyline&spans=speedLimit';
-
-  // Use proxy if configured, otherwise call HERE directly with embedded key.
-  const url = PROXY_URL
-    ? `${PROXY_URL}/here-route${params}`
-    : `https://router.hereapi.com/v8/routes${params}&apikey=${encodeURIComponent(HERE_API_KEY)}`;
-
+  let url = `${PROXY_URL}/limit?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`;
+  if (heading != null && heading >= 0) url += `&heading=${Math.round(heading)}`;
   try {
-    const res = await fetch(url, { signal });
-    if (!res.ok) return null;
+    const res = await fetchWithTimeout(url, {}, TOMTOM_TIMEOUT_MS, signal);
+    if (res.status === 429 || res.status === 503) {
+      // Capped, rate limited or switched off server-side: back off hard.
+      tomtomNextAllowed = Date.now() + TOMTOM_BACKOFF_MS;
+      return { status: 'skipped' };
+    }
+    if (!res.ok) return { status: 'skipped' };
     const data = await res.json();
-    const spans = data && data.routes && data.routes[0] && data.routes[0].sections && data.routes[0].sections[0] && data.routes[0].sections[0].spans;
-    if (!Array.isArray(spans)) return null;
-    const span = spans.find((s) => typeof s.speedLimit === 'number' && s.speedLimit > 0);
-    if (!span) return null;
-    // HERE returns speedLimit in m/s. Convert to km/h as our canonical unit.
-    const kmh = span.speedLimit * 3.6;
-    return { value: Math.round(kmh), unit: 'kmh', source: 'here' };
+    const valid =
+      typeof data.value === 'number' &&
+      data.value > 0 &&
+      (data.unit === 'mph' || data.unit === 'kmh');
+    return valid
+      ? { status: 'hit', limit: { value: data.value, unit: data.unit, source: 'tomtom' } }
+      : { status: 'miss' };
   } catch (e) {
-    if (e.name === 'AbortError') throw e;
-    return null;
+    if (signal && signal.aborted) throw e;
+    return { status: 'skipped' };
   }
 }
 
-// Session-level cache of results by ~11 m geo-grid cell. Skips the network
-// entirely when we've already resolved a nearby point this session — cutting both
-// OSM and HERE calls on repeat/looping routes. Cleared when the app restarts.
+// Session-level cache of answers by ~11 m geo-grid cell. Hits are kept for the
+// session; "no limit here" answers expire so the road can be re-checked later.
+// Nothing is cached when a provider was down or skipped.
 const CELL_PRECISION = 4; // decimal places (~11 m)
-const cellCache = new Map();
 const CELL_CACHE_MAX = 500;
+const MISS_TTL_MS = 10 * 60 * 1000;
+const cellCache = new Map(); // key -> { limit, missUntil }
 
 function cellKey(lat, lon) {
   return `${lat.toFixed(CELL_PRECISION)},${lon.toFixed(CELL_PRECISION)}`;
 }
 
-// Try OSM/Overpass first (free), fall back to HERE (paid) only where OSM has no
-// data. Results are memoized per grid cell so repeat passes hit no provider.
-async function fetchSpeedLimit(lat, lon, signal) {
+function cacheCell(key, entry) {
+  if (cellCache.size >= CELL_CACHE_MAX) cellCache.delete(cellCache.keys().next().value);
+  cellCache.set(key, entry);
+}
+
+// Returns a limit; null = "no posted limit here"; undefined = couldn't check
+// right now (keep showing the previous value). OSM first; TomTom only if OSM
+// can't answer.
+async function fetchSpeedLimit(lat, lon, heading, signal) {
   const key = cellKey(lat, lon);
-  if (cellCache.has(key)) return cellCache.get(key);
-
-  let result = await fetchSpeedLimitOverpass(lat, lon, signal);
-  if (!result) result = await fetchSpeedLimitHere(lat, lon, signal);
-
-  // Only cache real hits. A null may just be a flaky Overpass endpoint; caching it
-  // would suppress a valid HERE fallback on the next pass.
-  if (result) {
-    if (cellCache.size >= CELL_CACHE_MAX) {
-      cellCache.delete(cellCache.keys().next().value);
-    }
-    cellCache.set(key, result);
+  const cached = cellCache.get(key);
+  if (cached) {
+    if (cached.limit) return cached.limit;
+    if (Date.now() < cached.missUntil) return null;
+    cellCache.delete(key);
   }
-  return result;
+
+  const osm = await fetchSpeedLimitOverpass(lat, lon, signal);
+  if (osm.status === 'hit') {
+    cacheCell(key, { limit: osm.limit });
+    return osm.limit;
+  }
+
+  const tt = await fetchSpeedLimitTomTom(lat, lon, heading, signal);
+  if (tt.status === 'hit') {
+    cacheCell(key, { limit: tt.limit });
+    return tt.limit;
+  }
+  if (tt.status === 'miss') {
+    cacheCell(key, { limit: null, missUntil: Date.now() + MISS_TTL_MS });
+    return null;
+  }
+  return undefined;
 }
 
 function haversine(lat1, lon1, lat2, lon2) {
@@ -280,7 +316,8 @@ function handleLocation(loc) {
     speedMps: s != null && s >= 0 ? s : 0,
     accuracy: loc.coords.accuracy != null ? loc.coords.accuracy : null,
   });
-  maybeFetchLimit(loc.coords.latitude, loc.coords.longitude);
+  const h = loc.coords.heading;
+  maybeFetchLimit(loc.coords.latitude, loc.coords.longitude, h != null && h >= 0 ? h : null);
 }
 
 // Throttle: never more often than every MIN_QUERY_MS; otherwise query once
@@ -290,7 +327,7 @@ function handleLocation(loc) {
 const MIN_QUERY_MS = 5000;
 let lastQueried = { lat: null, lon: null, t: 0 };
 let limitAbort = null;
-async function maybeFetchLimit(lat, lon) {
+async function maybeFetchLimit(lat, lon, heading) {
   const now = Date.now();
   if (now - lastQueried.t < MIN_QUERY_MS) return;
   if (
@@ -307,8 +344,8 @@ async function maybeFetchLimit(lat, lon) {
   limitAbort = controller;
   setDrive({ limitLoading: true });
   try {
-    const result = await fetchSpeedLimit(lat, lon, controller.signal);
-    setDrive({ limit: result });
+    const result = await fetchSpeedLimit(lat, lon, heading, controller.signal);
+    if (result !== undefined) setDrive({ limit: result });
   } catch (e) {
     // AbortError or network failure: keep the previous limit
   } finally {
@@ -612,9 +649,10 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [carplayTemplate, carplayLimitText, driveOn, carplayPushed]);
 
-  const sourceLabel = limit
-    ? (limit.source === 'here' ? 'Limit Data: HERE' : 'Limit Data: OpenStreetMap')
-    : 'Limit Data: OpenStreetMap';
+  const sourceName = limit && limit.source === 'tomtom' ? 'TomTom' : 'OpenStreetMap';
+  const statusLine =
+    (accuracyMps != null ? `GPS ±${Math.round(accuracyMps)} m` : 'Acquiring GPS…') +
+    `  ·  Limits: ${sourceName}`;
 
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
@@ -704,6 +742,18 @@ export default function App() {
       )}
 
       <View style={[styles.footer, isLandscape && styles.footerLandscape, !isLandscape && { backgroundColor: '#fff', paddingHorizontal: 20 }]}>
+        <Text
+          style={[styles.footerStatus, !isLandscape && { color: '#555' }]}
+          numberOfLines={1}
+        >
+          {statusLine}
+        </Text>
+        {errorMsg && permStatus === 'granted' ? (
+          <Text style={[styles.errorText, !isLandscape && { color: '#b91c1c' }]} numberOfLines={2}>
+            {errorMsg}
+          </Text>
+        ) : null}
+
         <View style={styles.footerRow}>
           <TouchableOpacity
             style={[styles.unitBtn, !isLandscape && styles.unitBtnLight]}
@@ -714,19 +764,7 @@ export default function App() {
             </Text>
           </TouchableOpacity>
 
-          <View style={styles.footerCenter}>
-            <Text style={[styles.footerText, !isLandscape && { color: '#333' }]}>
-              {accuracyMps != null
-                ? 'GPS +/- ' + Math.round(accuracyMps) + ' m'
-                : 'Acquiring GPS...'}
-            </Text>
-            <Text style={[styles.footerTextDim, !isLandscape && { color: '#999' }]}>{sourceLabel}</Text>
-            {errorMsg && permStatus === 'granted' ? (
-              <Text style={[styles.errorText, !isLandscape && { color: '#b91c1c' }]}>{errorMsg}</Text>
-            ) : null}
-          </View>
-
-          {driveModeSupported && (
+          {driveModeSupported ? (
             <TouchableOpacity
               style={[
                 styles.driveBtn,
@@ -735,6 +773,9 @@ export default function App() {
               ]}
               onPress={toggleDriveMode}
               disabled={driveBusy}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: driveOn }}
+              accessibilityHint="Keeps your speed and the speed limit on the CarPlay Dashboard and Lock Screen while the phone is locked"
             >
               <Text
                 style={[
@@ -742,20 +783,24 @@ export default function App() {
                   !isLandscape && { color: '#000' },
                   driveOn && { color: '#fff' },
                 ]}
+                numberOfLines={1}
               >
-                {driveOn ? 'CarPlay ON' : 'CarPlay'}
+                {driveOn ? '●  Showing on CarPlay' : 'Show on CarPlay'}
               </Text>
             </TouchableOpacity>
+          ) : (
+            <View style={{ flex: 1 }} />
           )}
 
           <TouchableOpacity
+            style={styles.gearBtn}
             onPress={() => {
               setEditThresholds([...thresholds]);
               setSettingsVisible(true);
             }}
           >
             <Text style={[styles.gearText, !isLandscape && { color: '#000' }]}>
-              {'\u2699'}
+              {'⚙'}
             </Text>
           </TouchableOpacity>
         </View>
@@ -835,10 +880,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     width: '100%',
   },
-  footerCenter: {
-    flex: 1,
-    alignItems: 'center',
-  },
   unitBtnLight: {
     borderColor: '#000',
   },
@@ -856,12 +897,23 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   driveBtn: {
+    flex: 1,
     borderWidth: 1.5,
     borderColor: '#fff',
     paddingVertical: 5,
     paddingHorizontal: 10,
     borderRadius: 8,
-    marginRight: 12,
+    marginHorizontal: 12,
+    alignItems: 'center',
+  },
+  gearBtn: {
+    paddingLeft: 4,
+  },
+  footerStatus: {
+    color: '#aaa',
+    fontSize: 12,
+    textAlign: 'center',
+    marginBottom: 8,
   },
   driveBtnOn: {
     backgroundColor: '#16a34a',
@@ -870,12 +922,6 @@ const styles = StyleSheet.create({
   gearText: {
     color: '#ccc',
     fontSize: 22,
-  },
-  unitBtnSub: {
-    color: '#aaa',
-    fontSize: 10,
-    textAlign: 'center',
-    marginTop: 2,
   },
   centerBlock: {
     flex: 1,
@@ -929,16 +975,6 @@ const styles = StyleSheet.create({
     paddingTop: 6,
     paddingBottom: 6,
     paddingHorizontal: 16,
-  },
-  footerText: {
-    color: '#ddd',
-    fontSize: 13,
-  },
-  footerTextDim: {
-    color: '#777',
-    fontSize: 11,
-    marginTop: 4,
-    textAlign: 'center',
   },
   errorText: {
     color: '#ffb4b4',
