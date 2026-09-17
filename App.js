@@ -19,6 +19,8 @@ import { activateKeepAwakeAsync } from 'expo-keep-awake';
 import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
 import SpeedLimitActivity from './modules/speed-limit-activity';
+import { createLimitEngine } from './lookup/engine';
+import { convertLimit } from './lookup/maxspeed';
 
 // CarPlay — lazy-require to avoid errors in Expo Go.
 let HybridAutoPlay, AutoPlayInformationTemplate;
@@ -36,221 +38,11 @@ if (Platform.OS === 'ios') {
 const MPS_TO_MPH = 2.2369362921;
 const MPS_TO_KMH = 3.6;
 
-// ---- Speed limit providers ----
-// Each provider returns { value: number, unit: 'mph' | 'kmh', source: 'osm' | 'tomtom' }
-// or null. fetchSpeedLimit() tries OpenStreetMap/Overpass first (free), and only
-// asks TomTom (via our Cloudflare Worker) where OSM has no maxspeed or is down.
-//
-// HERE was removed after it billed ~$1,000 (see CLAUDE.md). The Worker's old
-// /here-route now returns 410, and there is no HERE key in the app anymore.
-//
-// TomTom can't bill: the account is on the free plan with no card, and the
-// Worker hard-caps calls per day and per device (proxy/worker.js). The client
-// also spaces TomTom calls out (TOMTOM_MIN_INTERVAL_MS) so one drive doesn't eat
-// the shared daily budget.
-
-const PROXY_URL = 'https://speed-limit-proxy.prcunningham.workers.dev';
-
-const OVERPASS_ENDPOINTS = [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-];
-// The public Overpass servers are often overloaded (504s / hangs). Give each
-// endpoint a short budget, and after a failure skip OSM for a while so lookups
-// go straight to the fallback instead of waiting on dead servers.
-const OVERPASS_TIMEOUT_MS = 4000;
-const OVERPASS_COOLDOWN_MS = 2 * 60 * 1000;
-let overpassDownUntil = 0;
-
-const TOMTOM_TIMEOUT_MS = 5000;
-const TOMTOM_MIN_INTERVAL_MS = 30 * 1000;
-const TOMTOM_BACKOFF_MS = 10 * 60 * 1000; // after the Worker says capped / off
-let tomtomNextAllowed = 0;
-
-// fetch() with its own timeout, still honouring the caller's abort signal.
-async function fetchWithTimeout(url, options, timeoutMs, signal) {
-  const controller = new AbortController();
-  const onAbort = () => controller.abort();
-  if (signal) {
-    if (signal.aborted) controller.abort();
-    else signal.addEventListener('abort', onAbort);
-  }
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } catch (e) {
-    // Re-throw the caller's abort as-is; turn our own timeout into a plain error.
-    if (signal && signal.aborted) throw e;
-    throw new Error('timeout');
-  } finally {
-    clearTimeout(timer);
-    if (signal) signal.removeEventListener('abort', onAbort);
-  }
-}
-
-function parseMaxspeed(raw) {
-  if (!raw) return null;
-  const s = String(raw).trim().toLowerCase();
-  // e.g. "50", "50 mph", "50mph", "50 km/h", "50kmh"
-  const mphMatch = s.match(/^(\d+(?:\.\d+)?)\s*mph$/);
-  if (mphMatch) return { value: parseFloat(mphMatch[1]), unit: 'mph' };
-  const kmhMatch = s.match(/^(\d+(?:\.\d+)?)\s*(km\/h|kmh|kph)$/);
-  if (kmhMatch) return { value: parseFloat(kmhMatch[1]), unit: 'kmh' };
-  const numMatch = s.match(/^(\d+(?:\.\d+)?)$/);
-  if (numMatch) return { value: parseFloat(numMatch[1]), unit: 'kmh' }; // OSM default
-  // Ignore implicit values like "RU:urban", "walk", "none", "signals", etc.
-  return null;
-}
-
-// Returns { status: 'hit', limit } | { status: 'miss' } | { status: 'down' }.
-// 'miss' = OSM answered but has no usable maxspeed here.
-async function fetchSpeedLimitOverpass(lat, lon, signal) {
-  if (Date.now() < overpassDownUntil) return { status: 'down' };
-
-  const radius = 25; // meters
-  const query = `[out:json][timeout:5];
-way(around:${radius},${lat},${lon})[highway][maxspeed];
-out tags center 1;`;
-
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const res = await fetchWithTimeout(
-        endpoint,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: 'data=' + encodeURIComponent(query),
-        },
-        OVERPASS_TIMEOUT_MS,
-        signal
-      );
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (!data.elements || data.elements.length === 0) return { status: 'miss' };
-
-      // Pick the closest element to (lat, lon) by great-circle distance on the center.
-      let best = null;
-      let bestDist = Infinity;
-      for (const el of data.elements) {
-        const c = el.center || { lat: el.lat, lon: el.lon };
-        if (c == null || c.lat == null || c.lon == null) continue;
-        const d = haversine(lat, lon, c.lat, c.lon);
-        if (d < bestDist) {
-          bestDist = d;
-          best = el;
-        }
-      }
-      const parsed = best && best.tags ? parseMaxspeed(best.tags.maxspeed) : null;
-      return parsed ? { status: 'hit', limit: { ...parsed, source: 'osm' } } : { status: 'miss' };
-    } catch (e) {
-      if (e.name === 'AbortError') throw e;
-      // timeout / network error: try the next endpoint
-    }
-  }
-  overpassDownUntil = Date.now() + OVERPASS_COOLDOWN_MS;
-  return { status: 'down' };
-}
-
-// Returns { status: 'hit', limit } | { status: 'miss' } | { status: 'skipped' }.
-async function fetchSpeedLimitTomTom(lat, lon, heading, signal) {
-  const now = Date.now();
-  if (!PROXY_URL || now < tomtomNextAllowed) return { status: 'skipped' };
-  tomtomNextAllowed = now + TOMTOM_MIN_INTERVAL_MS;
-
-  let url = `${PROXY_URL}/limit?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`;
-  if (heading != null && heading >= 0) url += `&heading=${Math.round(heading)}`;
-  try {
-    const res = await fetchWithTimeout(url, {}, TOMTOM_TIMEOUT_MS, signal);
-    if (res.status === 429 || res.status === 503) {
-      // Capped, rate limited or switched off server-side: back off hard.
-      tomtomNextAllowed = Date.now() + TOMTOM_BACKOFF_MS;
-      return { status: 'skipped' };
-    }
-    if (!res.ok) return { status: 'skipped' };
-    const data = await res.json();
-    const valid =
-      typeof data.value === 'number' &&
-      data.value > 0 &&
-      (data.unit === 'mph' || data.unit === 'kmh');
-    return valid
-      ? { status: 'hit', limit: { value: data.value, unit: data.unit, source: 'tomtom' } }
-      : { status: 'miss' };
-  } catch (e) {
-    if (signal && signal.aborted) throw e;
-    return { status: 'skipped' };
-  }
-}
-
-// Session-level cache of answers by ~11 m geo-grid cell. Hits are kept for the
-// session; "no limit here" answers expire so the road can be re-checked later.
-// Nothing is cached when a provider was down or skipped.
-const CELL_PRECISION = 4; // decimal places (~11 m)
-const CELL_CACHE_MAX = 500;
-const MISS_TTL_MS = 10 * 60 * 1000;
-const cellCache = new Map(); // key -> { limit, missUntil }
-
-function cellKey(lat, lon) {
-  return `${lat.toFixed(CELL_PRECISION)},${lon.toFixed(CELL_PRECISION)}`;
-}
-
-function cacheCell(key, entry) {
-  if (cellCache.size >= CELL_CACHE_MAX) cellCache.delete(cellCache.keys().next().value);
-  cellCache.set(key, entry);
-}
-
-// Returns a limit; null = "no posted limit here"; undefined = couldn't check
-// right now (keep showing the previous value). OSM first; TomTom only if OSM
-// can't answer.
-async function fetchSpeedLimit(lat, lon, heading, signal) {
-  const key = cellKey(lat, lon);
-  const cached = cellCache.get(key);
-  if (cached) {
-    if (cached.limit) return cached.limit;
-    if (Date.now() < cached.missUntil) return null;
-    cellCache.delete(key);
-  }
-
-  const osm = await fetchSpeedLimitOverpass(lat, lon, signal);
-  if (osm.status === 'hit') {
-    cacheCell(key, { limit: osm.limit });
-    return osm.limit;
-  }
-
-  const tt = await fetchSpeedLimitTomTom(lat, lon, heading, signal);
-  if (tt.status === 'hit') {
-    cacheCell(key, { limit: tt.limit });
-    return tt.limit;
-  }
-  if (tt.status === 'miss') {
-    cacheCell(key, { limit: null, missUntil: Date.now() + MISS_TTL_MS });
-    return null;
-  }
-  return undefined;
-}
-
-function haversine(lat1, lon1, lat2, lon2) {
-  const R = 6371000;
-  const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
-
-// Convert a limit given in one unit to the user's display unit.
-function convertLimit(limit, displayUnit) {
-  if (!limit) return null;
-  if (limit.unit === displayUnit) return Math.round(limit.value);
-  if (limit.unit === 'mph' && displayUnit === 'kmh') {
-    return Math.round(limit.value * 1.609344);
-  }
-  if (limit.unit === 'kmh' && displayUnit === 'mph') {
-    return Math.round(limit.value / 1.609344);
-  }
-  return Math.round(limit.value);
-}
+// ---- Speed limit lookup ----
+// All lookup logic lives in lookup/ (see lookup/engine.js): OpenStreetMap
+// area downloads matched on the device, TomTom through the capped Worker only
+// for roads OSM has no limit for. HERE was removed after it billed ~$1,000
+// (CLAUDE.md); the Worker's old /here-route returns 410.
 
 const KEEP_AWAKE_TAG = 'speed-limit-keep-awake';
 
@@ -286,7 +78,7 @@ const unitLabel = (unit) => (unit === 'mph' ? 'MPH' : 'KM/H');
 // by two sources: the foreground watchPositionAsync stream and the background
 // location task that keeps running while the phone is locked / on CarPlay. The
 // UI reads it with useSyncExternalStore.
-let drive = { speedMps: 0, accuracy: null, limit: null, limitLoading: false };
+let drive = { speedMps: 0, accuracy: null, limit: null, driveOn: false };
 let prefs = { unit: 'mph', thresholds: DEFAULT_THRESHOLDS };
 const driveListeners = new Set();
 
@@ -305,51 +97,51 @@ const subscribeDrive = (cb) => {
 };
 const getDrive = () => drive;
 
+// Lookup counters are kept across launches (Settings -> Lookup stats) so real
+// drives show how often a limit was found and how many TomTom calls it took.
+const STATS_KEY = '@speed_limit_lookup_stats';
+const STATS_SAVE_MS = 30 * 1000;
+let statsSavedAt = 0;
+
+const limitEngine = createLimitEngine({
+  onLimit: (limit) => setDrive({ limit }),
+  onStats: (stats) => {
+    const now = Date.now();
+    if (now - statsSavedAt < STATS_SAVE_MS) return;
+    statsSavedAt = now;
+    AsyncStorage.setItem(STATS_KEY, JSON.stringify(stats)).catch(() => {});
+  },
+});
+AsyncStorage.getItem(STATS_KEY)
+  .then((raw) => raw && limitEngine.restoreStats(JSON.parse(raw)))
+  .catch(() => {});
+
+function resetLookupStats() {
+  limitEngine.resetStats();
+  statsSavedAt = Date.now();
+  AsyncStorage.setItem(STATS_KEY, JSON.stringify(limitEngine.getStats())).catch(() => {});
+}
+
+// Drive mode switches itself off after this long without moving, so a
+// forgotten session doesn't run background location (or lookups) for hours.
+const DRIVE_IDLE_STOP_MS = 10 * 60 * 1000;
+const MOVING_MPS = 2;
+let lastMovingAt = 0;
+
 let lastLocationTs = 0;
 function handleLocation(loc) {
   // Both sources can deliver the same fix; only process newer ones.
   if (!loc || loc.timestamp <= lastLocationTs) return;
   lastLocationTs = loc.timestamp;
-  const s = loc.coords.speed;
-  // expo-location returns m/s; can be negative or null if unknown
-  setDrive({
-    speedMps: s != null && s >= 0 ? s : 0,
-    accuracy: loc.coords.accuracy != null ? loc.coords.accuracy : null,
-  });
-  const h = loc.coords.heading;
-  maybeFetchLimit(loc.coords.latitude, loc.coords.longitude, h != null && h >= 0 ? h : null);
-}
+  const { latitude, longitude, speed, heading, accuracy } = loc.coords;
+  const speedMps = speed != null && speed >= 0 ? speed : 0; // m/s; null/negative = unknown
+  setDrive({ speedMps, accuracy: accuracy != null ? accuracy : null });
+  limitEngine.update({ lat: latitude, lon: longitude, heading, speed: speedMps, accuracy });
 
-// Throttle: never more often than every MIN_QUERY_MS; otherwise query once
-// moved >= 40 m or 15 s have passed. The floor matters now that the background
-// task keeps this running for whole drives (see the Throttling note in
-// CLAUDE.md — the proper fix is roadmap Phase 1).
-const MIN_QUERY_MS = 5000;
-let lastQueried = { lat: null, lon: null, t: 0 };
-let limitAbort = null;
-async function maybeFetchLimit(lat, lon, heading) {
   const now = Date.now();
-  if (now - lastQueried.t < MIN_QUERY_MS) return;
-  if (
-    lastQueried.lat != null &&
-    haversine(lastQueried.lat, lastQueried.lon, lat, lon) < 40 &&
-    now - lastQueried.t < 15000
-  ) {
-    return;
-  }
-  lastQueried = { lat, lon, t: now };
-
-  if (limitAbort) limitAbort.abort();
-  const controller = new AbortController();
-  limitAbort = controller;
-  setDrive({ limitLoading: true });
-  try {
-    const result = await fetchSpeedLimit(lat, lon, heading, controller.signal);
-    if (result !== undefined) setDrive({ limit: result });
-  } catch (e) {
-    // AbortError or network failure: keep the previous limit
-  } finally {
-    if (limitAbort === controller) setDrive({ limitLoading: false });
+  if (speedMps > MOVING_MPS) lastMovingAt = now;
+  if (drive.driveOn && now - lastMovingAt > DRIVE_IDLE_STOP_MS) {
+    stopDriveMode().catch(() => {});
   }
 }
 
@@ -413,11 +205,14 @@ async function startDriveMode() {
     livePushedAt = Date.now();
     liveOn = true;
   }
+  lastMovingAt = Date.now(); // the idle timer starts now
+  setDrive({ driveOn: true });
 }
 
 async function stopDriveMode() {
   liveOn = false;
   liveSig = '';
+  setDrive({ driveOn: false });
   await SpeedLimitActivity.end().catch(() => {});
   if (await Location.hasStartedLocationUpdatesAsync(DRIVE_TASK).catch(() => false)) {
     await Location.stopLocationUpdatesAsync(DRIVE_TASK);
@@ -444,6 +239,46 @@ function carplayItems(limitText, driveOn) {
       },
     },
   ];
+}
+
+// Settings -> "Lookup stats": how often a limit was found while moving, and
+// what it cost. Refreshes every 2 s while the settings sheet is open.
+function LookupStats() {
+  const [stats, setStats] = useState(() => limitEngine.getStats());
+  useEffect(() => {
+    const id = setInterval(() => setStats(limitEngine.getStats()), 2000);
+    return () => clearInterval(id);
+  }, []);
+
+  const moving = stats.movingSeconds;
+  const pct = (secs) => (moving > 0 ? `${Math.round((secs / moving) * 100)}%` : '–');
+  const minutes = Math.round(moving / 60);
+  const since = new Date(stats.since).toLocaleDateString();
+  const rows = [
+    ['Driving time', `${minutes} min`],
+    ['Limit from OpenStreetMap', pct(stats.osmSeconds)],
+    ['Limit from TomTom', pct(stats.tomtomSeconds)],
+    ['No limit shown', pct(stats.unknownSeconds)],
+    ['Map downloads (failed)', `${stats.areaFetches} (${stats.areaFailures})`],
+    ['TomTom calls', `${stats.tomtomCalls}`],
+    ['  found / none', `${stats.tomtomHits} / ${stats.tomtomMisses}`],
+    ['  off or capped / errors', `${stats.tomtomBackoffs} / ${stats.tomtomErrors}`],
+  ];
+
+  return (
+    <View style={styles.statsBox}>
+      <Text style={styles.statsTitle}>Lookup stats since {since}</Text>
+      {rows.map(([label, value]) => (
+        <View key={label} style={styles.statsRow}>
+          <Text style={styles.statsLabel}>{label}</Text>
+          <Text style={styles.statsValue}>{value}</Text>
+        </View>
+      ))}
+      <TouchableOpacity onPress={() => { resetLookupStats(); setStats(limitEngine.getStats()); }}>
+        <Text style={styles.statsReset}>Reset stats</Text>
+      </TouchableOpacity>
+    </View>
+  );
 }
 
 export default function App() {
@@ -478,10 +313,9 @@ export default function App() {
 
   const [permStatus, setPermStatus] = useState('pending'); // pending | granted | denied
   const [errorMsg, setErrorMsg] = useState(null);
-  const [driveOn, setDriveOn] = useState(false);
   const [driveBusy, setDriveBusy] = useState(false);
 
-  const { speedMps, accuracy: accuracyMps, limit, limitLoading } = useSyncExternalStore(
+  const { speedMps, accuracy: accuracyMps, limit, driveOn } = useSyncExternalStore(
     subscribeDrive,
     getDrive
   );
@@ -540,7 +374,6 @@ export default function App() {
     return () => {
       cancelled = true;
       if (sub) sub.remove();
-      if (limitAbort) limitAbort.abort();
     };
   }, []);
 
@@ -554,7 +387,6 @@ export default function App() {
       if (running) {
         try {
           await startDriveMode();
-          setDriveOn(true);
         } catch (_) {
           await stopDriveMode();
         }
@@ -570,18 +402,15 @@ export default function App() {
     try {
       if (driveOn) {
         await stopDriveMode();
-        setDriveOn(false);
       } else {
         if (!SpeedLimitActivity.areActivitiesEnabled()) {
           setErrorMsg('Live Activities are turned off for Speed Limit in Settings.');
         }
         await startDriveMode();
-        setDriveOn(true);
       }
     } catch (e) {
       setErrorMsg('Could not start drive mode: ' + e.message);
       await stopDriveMode();
-      setDriveOn(false);
     } finally {
       setDriveBusy(false);
     }
@@ -707,13 +536,9 @@ export default function App() {
           <View style={styles.landscapeRight}>
             <View style={styles.landscapeSignBorder}>
               <Text style={[styles.label, { color: '#666' }]}>SPEED LIMIT</Text>
-              {limitLoading && displayLimit == null ? (
-                <ActivityIndicator color="#000" size="large" />
-              ) : (
-                <Text style={styles.limitValueLandscape}>
-                  {displayLimit != null ? displayLimit : '--'}
-                </Text>
-              )}
+              <Text style={styles.limitValueLandscape}>
+                {displayLimit != null ? displayLimit : '--'}
+              </Text>
             </View>
           </View>
         </View>
@@ -729,13 +554,9 @@ export default function App() {
           <View style={styles.limitBlockWhite}>
             <View style={styles.signBorder}>
               <Text style={[styles.label, { color: '#666' }]}>SPEED LIMIT</Text>
-            {limitLoading && displayLimit == null ? (
-              <ActivityIndicator color="#000" size="large" />
-            ) : (
-              <Text style={styles.limitValuePlain}>
-                {displayLimit != null ? displayLimit : '--'}
-              </Text>
-            )}
+            <Text style={styles.limitValuePlain}>
+              {displayLimit != null ? displayLimit : '--'}
+            </Text>
             </View>
           </View>
         </>
@@ -860,6 +681,8 @@ export default function App() {
                 <Text style={styles.modalBtnText}>Save</Text>
               </TouchableOpacity>
             </View>
+
+            <LookupStats />
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -1096,6 +919,42 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 28,
     borderRadius: 10,
+  },
+  statsBox: {
+    alignSelf: 'stretch',
+    marginTop: 20,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#333',
+  },
+  statsTitle: {
+    color: '#999',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginBottom: 8,
+    textTransform: 'uppercase',
+  },
+  statsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 2,
+  },
+  statsLabel: {
+    color: '#bbb',
+    fontSize: 13,
+  },
+  statsValue: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  statsReset: {
+    color: '#60a5fa',
+    fontSize: 13,
+    marginTop: 10,
+    textAlign: 'right',
   },
   modalBtnText: {
     color: '#fff',
