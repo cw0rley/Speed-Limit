@@ -261,7 +261,7 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
   background mode (would need a foreground service + `ACCESS_BACKGROUND_LOCATION`).
 - **No trip history / max-speed recorder.** Would be a ring buffer of `(t, speed, lat, lon)`.
 - **No speed smoothing.** Raw OS speed jitters near zero; a ~1 s EMA would feel nicer.
-- **HERE is gone** (see history above). Revoke the old key on the HERE account.
+- **HERE code is gone** (see history above); it may return only behind verified guardrails. Revoke the old key on the HERE account.
 
 ## Running
 
@@ -278,7 +278,7 @@ and Apple's entitlement before it will sign.
 
 ```
 speed-limit/
-  App.js                 # main component + all logic: drive store, drive mode, CarPlay template
+  App.js                 # UI, drive store, drive mode, Live Activity sync, CarPlay template
   app.json               # Expo config, permissions, plugins, bundle ids
   eas.json               # EAS build/submit profiles
   package.json           # deps (Expo SDK 54 / RN 0.81 / React 19)
@@ -288,7 +288,7 @@ speed-limit/
   modules/speed-limit-activity/ # local Expo module: JS -> ActivityKit bridge
   lookup/                # speed-limit engine: OSM area match + TomTom fallback (+ __tests__)
   proxy/
-    worker.js            # Cloudflare Worker: TomTom /limit with D1 caps + cache; /here-route = 410
+    worker.js            # Cloudflare Worker: TomTom /limit with D1 caps (no shared cache); /here-route = 410
     wrangler.toml        # Worker + D1 config, TOMTOM_ENABLED kill switch (secret set separately)
     README.md            # setup, safeguards, usage check
   assets/                # icon/splash/favicon + store screenshots
