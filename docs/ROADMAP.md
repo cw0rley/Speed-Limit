@@ -20,20 +20,20 @@ _Decided 2026-09-16. Research notes (with sources) are summarized at the bottom.
 ## Phase 0 — Foundations
 
 - [ ] Upgrade Expo SDK 54 → 56+ (one SDK at a time, `npx expo install --fix`), check `@iternio/react-native-auto-play`, `react-native-nitro-modules`, `babel-preset-expo` (currently pinned to ^55 on SDK 54 — mismatch).
-- [ ] Split `App.js` into modules: `lookup/` (providers, cache, throttle), `carplay/`, `settings/`, UI components.
-- [ ] **Remove the embedded `HERE_API_KEY`** from `App.js` and rotate/delete it on the HERE account.
-- [ ] Delete dead HERE code (`fetchSpeedLimitHere`, `/here-route` in the Worker) once TomTom replaces it.
+- [ ] Split `App.js` into modules — `lookup/` done (2026-09-17); `carplay/`, `settings/`, UI components still to do.
+- [x] **Remove the embedded `HERE_API_KEY`** from `App.js` (done). Still to do: revoke it on the HERE account.
+- [x] Delete dead HERE code; Worker `/here-route` now returns 410 (deployed 2026-09-17).
 
 ## Phase 1 — Lookup rework (do first: no provider is safe without it)
 
-- [ ] **Fix the throttle.** Today: fetch if moved ≥40 m **or** ≥15 s elapsed → ~1 call per 40 m at speed (~2,400/hr). New gate: require a minimum interval (e.g. ≥10 s) **and** movement to a new grid cell / new road; back off further when the limit hasn't changed.
-- [ ] Cache **negative** results (OSM miss) per cell for a short TTL so unmapped roads don't hammer the paid fallback.
-- [ ] Provider layer: `osm` → `tomtom`, each returning `{ value, unit, source }`.
-- [ ] Worker route `GET /limit?lat&lon` → TomTom Reverse Geocode with `returnSpeedLimit=true`; key as Worker secret `TOMTOM_API_KEY`.
-- [ ] Worker safety: KV cache per grid cell (TTL within TomTom's terms — verify, reportedly ≤30 days), per-user rate limit (per minute + per day), **global daily circuit breaker**, and log call counts.
-- [ ] **Verify the KV cache actually populates** (the HERE-era cache never did — `kv_keys.json` was empty).
+- [x] **Fix the throttle** (replaced by the area-match engine in `lookup/`, 2026-09-17). Today: fetch if moved ≥40 m **or** ≥15 s elapsed → ~1 call per 40 m at speed (~2,400/hr). New gate: require a minimum interval (e.g. ≥10 s) **and** movement to a new grid cell / new road; back off further when the limit hasn't changed.
+- [x] Cache **negative** results (OSM miss) per cell for a short TTL so unmapped roads don't hammer the paid fallback.
+- [x] Provider layer: `osm` → `tomtom`, each returning `{ value, unit, source }`.
+- [x] Worker route `GET /limit?lat&lon` → TomTom Reverse Geocode with `returnSpeedLimit=true`; key as Worker secret `TOMTOM_API_KEY`.
+- [x] Worker safety: D1 daily cap + per-IP cap, fail closed, kill switch (OFF), `/usage`. Shared cache dropped — TomTom T&Cs §11.4 forbid it.
+- [ ] **Cap drill** before enabling TomTom: cap 5 → 10 calls → 6–10 refused, TomTom dashboard shows 5, kill switch stops all; ~10-call billing-category check.
 - [ ] Stay on TomTom **Freemium** until usage is understood; set up alerts before moving to pay-as-you-grow.
-- [ ] Read TomTom T&Cs: caching duration, consumer use, in-vehicle / CarPlay display.
+- [x] Read TomTom T&Cs (shared caching forbidden; free licence "Evaluation Use"; "Automotive Usage" excluded) — written questions sent to TomTom and HERE 2026-09-17; awaiting replies.
 
 ## Phase 2 — Subscription
 
@@ -71,8 +71,8 @@ _Prototype built on `feat/carplay-live-activity` (2026-09-16) with `@bacons/appl
 
 ## Open questions
 
-3. Android: Android Auto was stripped after a Play rejection — any Android equivalent of the Live Activity (ongoing notification) wanted?
-4. Is OSM + TomTom coverage good enough in the areas you drive? Test before committing to launch.
+1. Android: Android Auto was stripped after a Play rejection — any Android equivalent of the Live Activity (ongoing notification) wanted?
+2. Is OSM + TomTom coverage good enough in the areas you drive? Test before committing to launch.
 
 ## Research summary (2026-09-16)
 
