@@ -34,16 +34,16 @@ struct SpeedLimitLiveActivity: Widget {
           SpeedReadout(state: context.state, isStale: context.isStale, numberSize: 44)
         }
         DynamicIslandExpandedRegion(.trailing) {
-          SpeedLimitSign(limit: context.state.limit, numberSize: 34)
+          SpeedLimitSign(limit: shownLimit(context.state, context.isStale), numberSize: 34)
         }
       } compactLeading: {
         Text(speedText(context.state, context.isStale))
           .font(.system(size: 15, weight: .heavy, design: .rounded))
           .foregroundStyle(Color(hex: context.state.speedColor))
       } compactTrailing: {
-        MiniSign(limit: context.state.limit)
+        MiniSign(limit: shownLimit(context.state, context.isStale))
       } minimal: {
-        MiniSign(limit: context.state.limit)
+        MiniSign(limit: shownLimit(context.state, context.isStale))
       }
     }
     // .small is the size CarPlay (and the Watch Smart Stack) uses.
@@ -65,7 +65,7 @@ struct ActivityRootView: View {
       HStack(spacing: 10) {
         SpeedReadout(state: state, isStale: isStale, numberSize: 40)
           .frame(maxWidth: .infinity)
-        SpeedLimitSign(limit: state.limit, numberSize: 34)
+        SpeedLimitSign(limit: shownLimit(state, isStale), numberSize: 34)
       }
       .padding(8)
     default:
@@ -73,7 +73,7 @@ struct ActivityRootView: View {
       HStack(spacing: 16) {
         SpeedReadout(state: state, isStale: isStale, numberSize: 64)
           .frame(maxWidth: .infinity)
-        SpeedLimitSign(limit: state.limit, numberSize: 50)
+        SpeedLimitSign(limit: shownLimit(state, isStale), numberSize: 50)
       }
       .padding(16)
     }
@@ -152,6 +152,12 @@ enum Palette {
   static let background = Color(hex: "#0B0D12")
   static let overRed = Color(hex: "#8A0F10")
   static let dim = Color(hex: "#8A97A7")
+}
+
+// When the app has stopped sending updates (staleDate passed), the last limit
+// may no longer apply — show "--" rather than a frozen number.
+func shownLimit(_ state: SpeedLimitAttributes.ContentState, _ isStale: Bool) -> Int? {
+  isStale ? nil : state.limit
 }
 
 func speedText(_ state: SpeedLimitAttributes.ContentState, _ isStale: Bool) -> String {

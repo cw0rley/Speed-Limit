@@ -279,3 +279,81 @@ test('tomtom client: sends the token and rounded coordinates, maps statuses', as
   for (const s of [403, 429, 503]) assert.equal((await call(s)).status, 'backoff');
   assert.equal((await call(502)).status, 'error');
 });
+
+// ---------------------------------------------------------------------------
+// Regressions for "CarPlay limit stuck on 55" (2026-09-18)
+// ---------------------------------------------------------------------------
+function parallelRoadsArea() {
+  // Three two-way east-west roads 40 m apart: A 35 mph (n=0), B 45 mph (n=40), C 55 mph (n=80).
+  const line = (n) => ({
+    type: 'LineString',
+    coordinates: [[LON + dLon(-600), LAT + dLat(n)], [LON + dLon(600), LAT + dLat(n)]],
+  });
+  const way = (id, n, maxspeed) => ({
+    type: 'way', id, geometry: line(n),
+    tags: { highway: 'primary', maxspeed, mf: '', mb: '', oneway: '', name: `R${id}` },
+  });
+  return parseArea({ elements: [way(1, 0, '35 mph'), way(2, 40, '45 mph'), way(3, 80, '55 mph')] }, syntheticBox);
+}
+
+function engineWith(fetchArea) {
+  let clock = 5_000_000;
+  const shown = [];
+  let areaCalls = 0;
+  const engine = createLimitEngine({
+    now: () => clock,
+    fetchArea: (...args) => { areaCalls += 1; return fetchArea(...args); },
+    fetchTomTom: async () => ({ status: 'backoff' }),
+    onLimit: (l) => shown.push(l && `${l.value}`),
+  });
+  const fix = async (north, east, heading = 90, speed = 15) => {
+    clock += 1000;
+    const p = at(north, east);
+    engine.update({ ...p, heading, speed, accuracy: 5 });
+    await flush();
+  };
+  return { engine, shown, fix, areaCalls: () => areaCalls };
+}
+
+test('engine: an unconfirmed stream of different roads does not freeze the old limit', async () => {
+  const h = engineWith(async () => parallelRoadsArea());
+  await h.fix(0, -300);
+  await h.fix(0, -285);
+  assert.equal(h.shown.at(-1), '35');
+  // Alternate between B and C every fix for 70 s: neither is ever confirmed.
+  for (let i = 0; i < 70; i++) await h.fix(i % 2 ? 80 : 40, -270 + i * 15);
+  assert.equal(h.shown.at(-1), null, 'falls back to -- instead of keeping 35');
+});
+
+test('engine: switching to a road with the same limit is immediate', async () => {
+  const area = parallelRoadsArea();
+  area.ways[1].tags.maxspeed = '35 mph'; // B now also 35
+  const h = engineWith(async () => area);
+  await h.fix(0, -300);
+  await h.fix(0, -285);
+  const changes = h.engine.getStats().limitChanges;
+  await h.fix(40, -270); // single fix on B
+  assert.equal(h.shown.at(-1), '35');
+  assert.equal(h.engine.getStats().limitChanges, changes, 'no visible change');
+});
+
+test('engine: a hung map download is abandoned and retried (no timers needed)', async () => {
+  let resolveFirst;
+  let calls = 0;
+  const h = engineWith(() => {
+    calls += 1;
+    if (calls === 1) return new Promise((r) => { resolveFirst = r; }); // never settles on its own
+    return Promise.resolve(parallelRoadsArea());
+  });
+  for (let i = 0; i < 27; i++) await h.fix(0, -300 + i * 5); // > 25 s after the download started
+  assert.equal(h.engine.getStats().areaTimeouts, 1);
+  // Retry waits for the back-off (15 s), then a fresh download succeeds.
+  for (let i = 0; i < 17; i++) await h.fix(0, -165 + i * 5);
+  assert.equal(calls, 2, 'retried');
+  assert.equal(h.shown.at(-1), '35');
+  // The hung request finally answering must not overwrite anything.
+  resolveFirst(parseArea({ elements: [] }, syntheticBox));
+  await flush();
+  await h.fix(0, -80);
+  assert.equal(h.shown.at(-1), '35');
+});

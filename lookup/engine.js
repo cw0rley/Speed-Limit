@@ -37,6 +37,11 @@ const STALE_AFTER_MS = 60 * 1000;
 const MOVING_MPS = 2; // ~4.5 mph
 const MAX_ACCURACY_M = 50; // ignore worse fixes for matching
 const CONFIRM_FIXES = 2;
+// Watchdogs, checked on every fix (not timers: with the phone locked, JS
+// timers — including fetch timeouts — may not fire, and a hung request would
+// otherwise block new map downloads for the rest of the drive).
+const AREA_WATCHDOG_MS = 25 * 1000;
+const TOMTOM_WATCHDOG_MS = 12 * 1000;
 const MAP_MAX = 2000;
 const CELL_PRECISION = 4;
 
@@ -54,6 +59,8 @@ export function emptyStats() {
     tomtomMisses: 0,
     tomtomBackoffs: 0,
     tomtomErrors: 0,
+    areaTimeouts: 0, // downloads abandoned by the watchdog
+    limitChanges: 0, // how often the shown limit changed
   };
 }
 
@@ -85,7 +92,23 @@ export function createLimitEngine({
   let lastConfirmedAt = 0;
   let lastFixAt = null;
   let disposed = false;
-  const abort = new AbortController();
+  const inflight = new Set(); // AbortControllers of running requests
+
+  let areaGen = 0; // bumps when a download is abandoned; stale results are ignored
+  let areaStartedAt = 0;
+  let areaAbort = null;
+  let tomtomGen = 0;
+  let tomtomStartedAt = 0;
+  let tomtomAbort = null;
+
+  function newRequest() {
+    const c = new AbortController();
+    inflight.add(c);
+    return c;
+  }
+  function endRequest(c) {
+    inflight.delete(c);
+  }
 
   let stats = { ...emptyStats(), ...(initialStats || {}) };
 
@@ -97,46 +120,86 @@ export function createLimitEngine({
           limit.unit !== current.limit.unit ||
           limit.source !== current.limit.source));
     current = { key, limit };
-    if (changed) onLimit(limit);
+    if (changed) {
+      stats.limitChanges += 1;
+      onLimit(limit);
+    }
   }
 
-  // Apply a candidate { key, limit } with the 2-fix confirmation rule.
+  const sameLimit = (a, b) =>
+    (a == null && b == null) ||
+    (a != null && b != null && a.value === b.value && a.unit === b.unit && a.source === b.source);
+
+  // Apply a candidate { key, limit } with the 2-fix confirmation rule. Only an
+  // ACCEPTED candidate counts as "confirmed" for the stale rule — otherwise a
+  // stream of changing candidates (ramps, parallel roads) would keep an old
+  // limit on screen forever (bug seen 2026-09-18: stuck on 55).
   function propose(key, limit) {
-    lastConfirmedAt = now();
-    if (key === current.key || current.key == null) {
+    if (key === current.key || current.key == null || sameLimit(limit, current.limit)) {
+      // Same road, first answer, or a different road with the same limit
+      // (switching can't flicker the display): accept now.
       pending = { key: null, count: 0 };
+      lastConfirmedAt = now();
       show(key, limit);
       return;
     }
     pending = pending.key === key ? { key, count: pending.count + 1 } : { key, count: 1 };
     if (pending.count >= CONFIRM_FIXES) {
       pending = { key: null, count: 0 };
+      lastConfirmedAt = now();
       show(key, limit);
     }
+  }
+
+  function areaFailed() {
+    stats.areaFailures += 1;
+    areaFailures += 1;
+    areaRetryAt =
+      now() + Math.min(AREA_RETRY_MAX_MS, AREA_RETRY_BASE_MS * 2 ** (areaFailures - 1));
   }
 
   function loadArea(fix) {
     if (areaLoading || now() < areaRetryAt) return;
     areaLoading = true;
+    areaStartedAt = now();
     stats.areaFetches += 1;
+    const gen = ++areaGen;
+    const req = newRequest();
+    areaAbort = req;
     const box = areaBoxFor(fix.lat, fix.lon, fix.heading, fix.speed);
-    fetchArea(box, { signal: abort.signal })
+    fetchArea(box, { signal: req.signal })
       .then((a) => {
-        if (disposed) return;
+        if (disposed || gen !== areaGen) return;
         area = a;
         areaFailures = 0;
         areaRetryAt = 0;
       })
       .catch(() => {
-        if (disposed) return;
-        stats.areaFailures += 1;
-        areaFailures += 1;
-        areaRetryAt =
-          now() + Math.min(AREA_RETRY_MAX_MS, AREA_RETRY_BASE_MS * 2 ** (areaFailures - 1));
+        if (disposed || gen !== areaGen) return;
+        areaFailed();
       })
       .finally(() => {
-        areaLoading = false;
+        endRequest(req);
+        if (gen === areaGen) areaLoading = false;
       });
+  }
+
+  // Called on every fix: abandon requests that have hung.
+  function checkWatchdogs() {
+    const t = now();
+    if (areaLoading && t - areaStartedAt > AREA_WATCHDOG_MS) {
+      areaGen += 1; // ignore whatever the hung request eventually returns
+      if (areaAbort) areaAbort.abort();
+      areaLoading = false;
+      stats.areaTimeouts += 1;
+      areaFailed();
+    }
+    if (tomtomBusy && t - tomtomStartedAt > TOMTOM_WATCHDOG_MS) {
+      tomtomGen += 1;
+      if (tomtomAbort) tomtomAbort.abort();
+      tomtomBusy = false;
+      stats.tomtomErrors += 1;
+    }
   }
 
   // Can we spend a TomTom call right now? Per-road lookups may also run while
@@ -151,11 +214,15 @@ export function createLimitEngine({
 
   function askTomTom(fix, store, road = null) {
     tomtomBusy = true;
+    tomtomStartedAt = now();
     tomtomNextAt = now() + TOMTOM_MIN_INTERVAL_MS;
     stats.tomtomCalls += 1;
-    fetchTomTom(fix.lat, fix.lon, fix.heading, { signal: abort.signal, road })
+    const gen = ++tomtomGen;
+    const req = newRequest();
+    tomtomAbort = req;
+    fetchTomTom(fix.lat, fix.lon, fix.heading, { signal: req.signal, road })
       .then((r) => {
-        if (disposed) return;
+        if (disposed || gen !== tomtomGen) return;
         if (r.status === 'hit') {
           stats.tomtomHits += 1;
           store(r.limit);
@@ -170,10 +237,11 @@ export function createLimitEngine({
         }
       })
       .catch(() => {
-        stats.tomtomErrors += 1;
+        if (gen === tomtomGen) stats.tomtomErrors += 1;
       })
       .finally(() => {
-        tomtomBusy = false;
+        endRequest(req);
+        if (gen === tomtomGen) tomtomBusy = false;
       });
   }
 
@@ -215,6 +283,7 @@ export function createLimitEngine({
     const heading = Number.isFinite(fix.heading) && fix.heading >= 0 ? fix.heading : null;
     const f = { ...fix, speed, heading };
 
+    checkWatchdogs();
     if (areaNeedsRefresh(area, f.lat, f.lon)) loadArea(f);
 
     if (f.accuracy == null || f.accuracy <= MAX_ACCURACY_M) {
@@ -271,7 +340,8 @@ export function createLimitEngine({
     getCurrent: () => current.limit,
     dispose: () => {
       disposed = true;
-      abort.abort();
+      inflight.forEach((c) => c.abort());
+      inflight.clear();
     },
   };
 }

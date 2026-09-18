@@ -96,10 +96,12 @@ function setDrive(patch) {
   drive = { ...drive, ...patch };
   driveListeners.forEach((l) => l());
   syncLiveActivity();
+  syncCarPlay();
 }
 function setPrefs(next) {
   prefs = next;
   syncLiveActivity();
+  syncCarPlay();
 }
 const subscribeDrive = (cb) => {
   driveListeners.add(cb);
@@ -239,7 +241,29 @@ async function stopDriveMode() {
 // Apple's templates. We show the limit + a pointer to the Live Activity, which
 // is where the custom sign graphic lives. Driving Task apps must not refresh
 // more than about every 10 s, so updates are rate-limited.
+//
+// Driven by drive-store changes (i.e. GPS fixes), NOT by React effects or
+// timers: with the phone locked, JS timers may not fire, which froze this
+// screen on an old limit (reported 2026-09-18: "stuck on 55").
 const CARPLAY_MIN_UPDATE_MS = 10000;
+let carplayTemplate = null;
+let carplaySig = '';
+let carplayPushedAt = 0;
+
+function syncCarPlay(force = false) {
+  if (!carplayTemplate) return;
+  const d = computeDisplay(drive, prefs);
+  const limitText = d.displayLimit != null ? `${d.displayLimit} ${unitLabel(prefs.unit)}` : '--';
+  const sig = `${limitText}|${drive.driveOn}`;
+  if (sig === carplaySig) return;
+  const now = Date.now();
+  // A newer value that arrives inside the 10 s window is picked up by a later
+  // fix (they come every second while moving).
+  if (!force && now - carplayPushedAt < CARPLAY_MIN_UPDATE_MS) return;
+  carplaySig = sig;
+  carplayPushedAt = now;
+  carplayTemplate.updateItems(carplayItems(limitText, drive.driveOn)).catch(() => {});
+}
 
 function carplayItems(limitText, driveOn) {
   return [
@@ -274,7 +298,8 @@ function LookupStats() {
     ['Limit from OpenStreetMap', pct(stats.osmSeconds)],
     ['Limit from TomTom', pct(stats.tomtomSeconds)],
     ['No limit shown', pct(stats.unknownSeconds)],
-    ['Map downloads (failed)', `${stats.areaFetches} (${stats.areaFailures})`],
+    ['Map downloads (failed / timed out)', `${stats.areaFetches} (${stats.areaFailures} / ${stats.areaTimeouts || 0})`],
+    ['Limit changes', `${stats.limitChanges || 0}`],
     ['TomTom calls', `${stats.tomtomCalls}`],
     ['  found / none', `${stats.tomtomHits} / ${stats.tomtomMisses}`],
     ['  off or capped / errors', `${stats.tomtomBackoffs} / ${stats.tomtomErrors}`],
@@ -487,10 +512,8 @@ export default function App() {
     lastOverRef.current = isOver;
   }, [isOver]);
 
-  // ---- CarPlay (InformationTemplate) ----
-  const [carplayTemplate, setCarplayTemplate] = useState(null);
-  const [carplayPushed, setCarplayPushed] = useState({ sig: '', at: 0 });
-
+  // ---- CarPlay (InformationTemplate): connect/disconnect only; updates are
+  // pushed by syncCarPlay() from the drive store. ----
   useEffect(() => {
     if (!HybridAutoPlay || !AutoPlayInformationTemplate) return;
 
@@ -500,10 +523,13 @@ export default function App() {
         items: carplayItems('--', false),
       });
       tpl.setRootTemplate();
-      setCarplayPushed({ sig: '', at: 0 }); // force a push to the new template
-      setCarplayTemplate(tpl);
+      carplayTemplate = tpl;
+      carplaySig = '';
+      syncCarPlay(true); // fill in the current values right away
     };
-    const onDisconnect = () => setCarplayTemplate(null);
+    const onDisconnect = () => {
+      carplayTemplate = null;
+    };
 
     const cleanupConnect = HybridAutoPlay.addListener('didConnect', onConnect);
     const cleanupDisconnect = HybridAutoPlay.addListener('didDisconnect', onDisconnect);
@@ -518,22 +544,6 @@ export default function App() {
       cleanupDisconnect();
     };
   }, []);
-
-  // Push the limit + drive-mode hint to CarPlay, at most every 10 s (Driving
-  // Task rule). A trailing timer delivers the latest value after the wait.
-  const carplayLimitText =
-    displayLimit != null ? `${displayLimit} ${unitLabel(unit)}` : '--';
-  useEffect(() => {
-    if (!carplayTemplate) return;
-    const sig = `${carplayLimitText}|${driveOn}`;
-    if (sig === carplayPushed.sig) return;
-    const wait = Math.max(0, carplayPushed.at + CARPLAY_MIN_UPDATE_MS - Date.now());
-    const timer = setTimeout(() => {
-      carplayTemplate.updateItems(carplayItems(carplayLimitText, driveOn)).catch(() => {});
-      setCarplayPushed({ sig, at: Date.now() });
-    }, wait);
-    return () => clearTimeout(timer);
-  }, [carplayTemplate, carplayLimitText, driveOn, carplayPushed]);
 
   const sourceName = limit && limit.source === 'tomtom' ? 'TomTom' : 'OpenStreetMap';
   const statusLine =

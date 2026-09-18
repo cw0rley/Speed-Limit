@@ -96,6 +96,16 @@ servers also fail often (504s / timeouts observed repeatedly; `kumi.systems` nev
 OSM alone cannot be the product; the commercial fallback (or a self-hosted OSM copy plus another
 data source) is required.
 
+**Background-safe by design (fix for "CarPlay limit stuck on 55", 2026-09-18):** with the phone
+locked, JS timers (React effects with `setTimeout`, fetch timeouts) may not fire. So nothing on
+the drive path depends on timers: the CarPlay template is pushed by `syncCarPlay()` from
+`setDrive` (GPS fixes), and the engine runs **watchdogs on every fix** (area download abandoned
+after 25 s → counted in `areaTimeouts`, TomTom after 12 s; late results ignored via generation
+counters). The confirmation rule only refreshes the stale timer for **accepted** candidates
+(previously every proposal did, so alternating candidates froze the old limit forever); a road
+with the **same limit** is accepted immediately. The Live Activity blanks the **sign** too when
+stale. Regression tests cover all of these.
+
 **Drive-mode idle stop**: `handleLocation` switches drive mode off after 10 min without moving
 faster than 2 m/s (`DRIVE_IDLE_STOP_MS`), so a forgotten session doesn't run background
 location for hours.
