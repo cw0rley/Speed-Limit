@@ -11,6 +11,7 @@ import {
   Modal,
   TextInput,
   KeyboardAvoidingView,
+  ScrollView,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
@@ -115,8 +116,22 @@ const STATS_KEY = '@speed_limit_lookup_stats';
 const STATS_SAVE_MS = 30 * 1000;
 let statsSavedAt = 0;
 
+// Last few limit changes, for diagnosing wrong/stuck limits on real drives.
+// Memory only: never saved or sent anywhere, gone when the app closes.
+const RECENT_CHANGES_MAX = 20;
+const recentLimitChanges = [];
+
 const limitEngine = createLimitEngine({
-  onLimit: (limit) => setDrive({ limit }),
+  onLimit: (limit) => {
+    recentLimitChanges.unshift({
+      at: Date.now(),
+      text: limit ? `${Math.round(limit.value)} ${limit.unit === 'mph' ? 'mph' : 'km/h'}` : '--',
+      source: limit ? (limit.source === 'tomtom' ? 'TomTom' : 'OSM') : '',
+      road: (limit && limit.road) || '',
+    });
+    if (recentLimitChanges.length > RECENT_CHANGES_MAX) recentLimitChanges.pop();
+    setDrive({ limit });
+  },
   onStats: (stats) => {
     const now = Date.now();
     if (now - statsSavedAt < STATS_SAVE_MS) return;
@@ -317,6 +332,24 @@ function LookupStats() {
       <TouchableOpacity onPress={() => { resetLookupStats(); setStats(limitEngine.getStats()); }}>
         <Text style={styles.statsReset}>Reset stats</Text>
       </TouchableOpacity>
+
+      <Text style={[styles.statsTitle, { marginTop: 14 }]}>Recent limit changes</Text>
+      {recentLimitChanges.length === 0 ? (
+        <Text style={styles.statsLabel}>None since the app started.</Text>
+      ) : (
+        recentLimitChanges.map((c) => (
+          <View key={c.at} style={styles.statsRow}>
+            <Text style={styles.statsLabel} numberOfLines={1}>
+              {new Date(c.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
+              {c.road ? `  ${c.road}` : ''}
+            </Text>
+            <Text style={styles.statsValue}>
+              {c.text}
+              {c.source ? ` · ${c.source}` : ''}
+            </Text>
+          </View>
+        ))
+      )}
     </View>
   );
 }
@@ -718,6 +751,11 @@ export default function App() {
           style={styles.modalOverlay}
         >
           <View style={styles.modalContent}>
+            <ScrollView
+              style={{ alignSelf: 'stretch' }}
+              contentContainerStyle={{ alignItems: 'center' }}
+              keyboardShouldPersistTaps="handled"
+            >
             <Text style={styles.modalTitle}>Speed Alert Thresholds</Text>
             <Text style={styles.modalSubtitle}>
               {unit === 'mph' ? 'MPH' : 'KM/H'} over the limit
@@ -768,6 +806,7 @@ export default function App() {
               }}
             />
             <LookupStats />
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -962,6 +1001,7 @@ const styles = StyleSheet.create({
     padding: 24,
     width: '85%',
     maxWidth: 400,
+    maxHeight: '85%',
     alignItems: 'center',
   },
   modalTitle: {
