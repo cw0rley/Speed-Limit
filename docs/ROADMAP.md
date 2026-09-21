@@ -31,7 +31,7 @@ _Decided 2026-09-16. Research notes (with sources) are summarized at the bottom.
 - [x] Provider layer: `osm` → `tomtom`, each returning `{ value, unit, source }`.
 - [x] Worker route `GET /limit?lat&lon` → TomTom Reverse Geocode with `returnSpeedLimit=true`; key as Worker secret `TOMTOM_API_KEY`.
 - [x] Worker safety: D1 daily cap + per-IP cap, fail closed, kill switch (OFF), `/usage`. Shared cache dropped — TomTom T&Cs §11.4 forbid it.
-- [ ] **Cap drill** before enabling TomTom: cap 5 → 10 calls → 6–10 refused, TomTom dashboard shows 5, kill switch stops all; ~10-call billing-category check.
+- [x] **Cap drill** (passed 2026-09-17; TomTom dashboard matched) before enabling TomTom: cap 5 → 10 calls → 6–10 refused, TomTom dashboard shows 5, kill switch stops all; ~10-call billing-category check.
 - [ ] Stay on TomTom **Freemium** until usage is understood; set up alerts before moving to pay-as-you-grow.
 - [x] Read TomTom T&Cs (shared caching forbidden; free licence "Evaluation Use"; "Automotive Usage" excluded) — written questions sent to TomTom and HERE 2026-09-17; awaiting replies.
 
