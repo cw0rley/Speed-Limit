@@ -159,7 +159,9 @@ primary provider until commit `1953370` (Aug 5). Billing continued after that fi
 transactions, peak 30,234 on Aug 7) — most likely old app builds still calling the proxy, and/or
 the KV cache never populating. **Now:** all HERE code and the embedded key are gone from the app,
 the Worker's `/here-route` returns 410 (so re-enabling the HERE key can't resume billing from old
-builds), and the old KV namespace binding was dropped. **HERE may only return behind verified guardrails** (the user is open to HERE again, 2026-09-17 — but HERE's Base plan has no provider-side hard stop, only alert emails). The old
+builds), and the old KV namespace binding was dropped. **HERE is ruled out (decided 2026-09-21):** even contacting HERE requires creating an account
+with a payment method, and its Base plan has no provider-side hard stop (alert emails only), so it
+fails the no-billing guardrails. TomTom is the provider being pursued. The old
 `HERE_API_KEY` Worker secret can be deleted; the key itself should be revoked on the HERE account.
 
 ## Subscription (`subscription/`) — RevenueCat
@@ -309,8 +311,9 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
   maps to `roadUse`. Evaluate TomTom **Snap to Roads** (on the key) for highways next.
 - `/here-route` → 410 live, `/usage` live. D1 `speed-limit-usage` (id `a75a26ec-…`);
   secrets `TOMTOM_API_KEY`, `TEST_CLIENT_TOKEN`. **Store builds must not use TomTom** until
-  TomTom answers the licensing inquiry (sent 2026-09-17, text in
-  `cut-paste/provider-inquiry-tomtom.txt`; HERE was asked too).
+  TomTom answers the licensing inquiry — case **CS0014609** (opened 2026-09-17 by mistake with
+  the HERE text; corrected via a comment with `cut-paste/provider-inquiry-tomtom.txt`). HERE was
+  never contacted (requires an account with a card) and is ruled out.
 - **CarPlay Navigation entitlement was REFUSED** (Case-ID 21844634, 2026-09-16) — the `MapTemplate`
   approach on `feat/carplay-grid-display` is dead. Custom graphics now go through a Live Activity /
   widget (SwiftUI, no entitlement). The

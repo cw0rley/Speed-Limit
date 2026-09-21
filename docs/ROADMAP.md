@@ -8,7 +8,7 @@ _Decided 2026-09-16. Research notes (with sources) are summarized at the bottom.
 |---|---|
 | Scope | **Evolve the existing app** (same bundle id `com.claytonrugby.speedlimit`, same store listings). Upgrade Expo to **SDK 56+**. Split `App.js` into modules as we touch it. |
 | Business model | **Subscription only** — free download, free trial via introductory offer, then auto-renewing subscription. No free tier. |
-| Speed-limit data | **OSM first, TomTom fallback.** TomTom Reverse Geocode (`returnSpeedLimit=true`) is called only when OSM has no `maxspeed`, and only through the Cloudflare Worker. HERE stays off. |
+| Speed-limit data | **OSM first, TomTom fallback.** HERE ruled out 2026-09-21 (no card-free hard stop). TomTom Reverse Geocode (`returnSpeedLimit=true`) is called only when OSM has no `maxspeed`, and only through the Cloudflare Worker. HERE stays off. |
 | CarPlay | **Live Activity** (small family) on the CarPlay dashboard — no entitlement needed. The full-screen `MapTemplate` branch is dead — **Apple refused the Navigation entitlement** (Case-ID 21844634, 2026-09-16). |
 
 ## Why these choices
