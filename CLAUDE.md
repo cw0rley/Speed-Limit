@@ -305,6 +305,11 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
   kill switch, and the TomTom dashboard matched: 2 successful calls = "Reverse Geocoding 2 / 20 000";
   6 earlier calls with the rotated key got 401 and don't count against the allowance).
   TestFlight **build 28** (`testflight` profile, commit `2ec50eb`) carries the token.
+- **First real drive with TomTom (2026-09-22): 116 calls in one day** (cap 200). If typical,
+  that's ~3,500/user/month — TomTom's free 20k would cover only ~6 active users, and at ~$0.50/1k
+  that's ~$1.75/user/month, above the earlier $0.45–0.90 estimate. Pricing and further call
+  reduction (e.g. persisting the per-road cache across sessions) need to account for this.
+  TomTom case CS0014609: acknowledged 2026-09-23 ("forwarded to the concerned team"), no answers yet.
 - **TomTom reverse-geocode accuracy concern:** on the NJ Turnpike bridge (OSM 55 mph) it returned
   **25 mph** (a nearby local street) without a road filter, and **no limit** with
   `roadUse=LimitedAccess`. The app now sends the matched OSM road class (`road=`), which the Worker
