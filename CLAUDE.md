@@ -133,7 +133,12 @@ location for hours.
    (KV was rejected: reads can be ~60 s stale and would undercount.)
 3. Worker **per-IP cap** `PER_IP_HOURLY_CAP = 60`.
 4. **Kill switch**: `TOMTOM_ENABLED = "false"` in `proxy/wrangler.toml` + `npx wrangler deploy`.
-4b. **Test-builds-only access**: `TOMTOM_ACCESS = "test"` → only requests with header
+4b. **Access modes** (`TOMTOM_ACCESS`): `"test"` = test builds only, `"subscribers"` = only app
+   user ids with an active RevenueCat `pro` entitlement (checked via RevenueCat REST with the
+   `REVENUECAT_SECRET_KEY` secret, remembered in D1 `subscriber_cache` for 10 min, **fails
+   closed**), `"both"` = either. The app sends `X-App-User-Id` (RevenueCat id) alongside the test
+   token. Setup steps: `docs/STORE-SETUP.md`.
+   Currently `"test"` → only requests with header
    `X-Client-Token` = Worker secret `TEST_CLIENT_TOKEN`. The app sends it only if built with the
    EAS **`testflight`** profile (`eas.json`, `environment: "preview"`), whose EAS env var
    `EXPO_PUBLIC_TEST_CLIENT_TOKEN` holds the same value (not in git; production env has none).
@@ -201,9 +206,10 @@ Decided 2026-09-17: **subscription only**, **$2.99/month and $24.99/year**, **7-
 - **`App.js`**: `initSubscriptions()` on mount; when `paywallRequired`, the paywall *is* the app,
   drive mode is stopped and lookups are paused (`lookupsPaused`); Settings shows a
   **Subscription** section (status, See plans / Manage subscription, Restore purchases).
-- **Not done yet:** RevenueCat project + App Store / Play products (user), hosted privacy policy
-  URL + updated policy text (still mentions HERE), notice start date, and **Worker gating of
-  `/limit` by entitlement** (send `getAppUserId()`; Worker checks RevenueCat REST).
+- **Worker gating is built** (`TOMTOM_ACCESS = "subscribers"`; `isEntitled` / `validAppUserId`
+  in `proxy/worker.js`, unit-tested). Still needed from the user: RevenueCat project + App Store
+  products, the `REVENUECAT_SECRET_KEY` Worker secret, the public SDK key in `app.json`, a hosted
+  privacy policy URL, and the notice start date — all in **`docs/STORE-SETUP.md`**.
 
 ## UI (phone)
 
@@ -373,6 +379,7 @@ speed-limit/
   generate-*.js          # asset/screenshot/sign generators (use sharp)
   privacy-policy.html
   docs/ROADMAP.md        # v2 plan: TomTom fallback, subscription, CarPlay Live Activity
+  docs/STORE-SETUP.md    # Apple + RevenueCat setup steps for the owner
   README.md              # user-facing setup docs (lags this file)
   CLAUDE.md              # this file — orient here first
 ```

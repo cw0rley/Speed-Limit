@@ -79,6 +79,7 @@ export function createLimitEngine({
   onStats = () => {},
   initialStats = null,
   areaStore = null, // lookup/areaStore.js — OSM data reused across drives
+  getAppUserId = () => null, // RevenueCat id, sent so the Worker can check the subscription
 } = {}) {
   let area = null;
   let areaLoading = false;
@@ -237,7 +238,11 @@ export function createLimitEngine({
     const gen = ++tomtomGen;
     const req = newRequest();
     tomtomAbort = req;
-    fetchTomTom(fix.lat, fix.lon, fix.heading, { signal: req.signal, road })
+    fetchTomTom(fix.lat, fix.lon, fix.heading, {
+      signal: req.signal,
+      road,
+      appUserId: getAppUserId(),
+    })
       .then((r) => {
         if (disposed || gen !== tomtomGen) return;
         if (r.status === 'hit') {

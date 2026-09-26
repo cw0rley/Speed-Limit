@@ -16,10 +16,15 @@
 //      (KV reads can be stale for ~60 s, which would undercount).
 //   3. KILL SWITCH: set the TOMTOM_ENABLED var to "false" (wrangler.toml) and
 //      redeploy — TomTom is never called.
-//   3b. ACCESS: TOMTOM_ACCESS = "test" serves only requests carrying the
-//      X-Client-Token header equal to the TEST_CLIENT_TOKEN secret (TestFlight
-//      builds from the `testflight` EAS profile). Any other value denies all.
-//      ("subscribers" — RevenueCat entitlement check — is not built yet.)
+//   3b. ACCESS (TOMTOM_ACCESS):
+//        "test"        — only requests with X-Client-Token = TEST_CLIENT_TOKEN
+//                        (TestFlight builds from the `testflight` EAS profile).
+//        "subscribers" — only requests whose X-App-User-Id has an active
+//                        RevenueCat entitlement (checked against RevenueCat's
+//                        REST API with the REVENUECAT_SECRET_KEY secret, then
+//                        remembered in D1 for ENTITLEMENT_TTL_MS).
+//        "both"        — either of the above.
+//        anything else — everything is denied.
 //   4. PER_IP_HOURLY_CAP: one device/IP can't burn the day's budget.
 //   5. NO shared cache of TomTom answers: TomTom T&Cs §11.4 forbid caching
 //      "for the purpose of scaling results to serve multiple clients or users".
@@ -51,10 +56,77 @@ function safeEqual(a, b) {
   return diff === 0;
 }
 
-function clientAllowed(request, env) {
-  if (env.TOMTOM_ACCESS === 'test') {
-    return !!env.TEST_CLIENT_TOKEN && safeEqual(request.headers.get('X-Client-Token') || '', env.TEST_CLIENT_TOKEN);
+const ENTITLEMENT_TTL_MS = 10 * 60 * 1000; // re-check a subscriber this often
+const ENTITLEMENT_ID = 'pro';
+
+function testTokenOk(request, env) {
+  return (
+    !!env.TEST_CLIENT_TOKEN &&
+    safeEqual(request.headers.get('X-Client-Token') || '', env.TEST_CLIENT_TOKEN)
+  );
+}
+
+// Does a RevenueCat /subscribers response grant the entitlement right now?
+export function isEntitled(body, nowMs, entitlementId = ENTITLEMENT_ID) {
+  const ent =
+    body && body.subscriber && body.subscriber.entitlements && body.subscriber.entitlements[entitlementId];
+  if (!ent) return false;
+  // No expiry = lifetime/promotional grant.
+  if (!ent.expires_date) return true;
+  const expires = Date.parse(ent.expires_date);
+  return Number.isFinite(expires) && expires > nowMs;
+}
+
+// App user ids come from RevenueCat; keep them to a safe shape before use.
+export function validAppUserId(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9:_$.+-]{6,128}$/.test(id);
+}
+
+async function subscriberAllowed(request, env, db) {
+  const id = request.headers.get('X-App-User-Id') || '';
+  if (!validAppUserId(id) || !env.REVENUECAT_SECRET_KEY) return false;
+
+  const nowMs = Date.now();
+  try {
+    const row = await db
+      .prepare('SELECT entitled, checked_at FROM subscriber_cache WHERE app_user_id = ?1')
+      .bind(id)
+      .first();
+    if (row && nowMs - Number(row.checked_at) < ENTITLEMENT_TTL_MS) return Number(row.entitled) === 1;
+  } catch (_) {
+    return false; // fail closed
   }
+
+  let entitled = false;
+  try {
+    const res = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(id)}`, {
+      headers: { Authorization: `Bearer ${env.REVENUECAT_SECRET_KEY}`, Accept: 'application/json' },
+    });
+    if (!res.ok) return false;
+    entitled = isEntitled(await res.json(), nowMs);
+  } catch (_) {
+    return false;
+  }
+
+  try {
+    await db
+      .prepare(
+        'INSERT INTO subscriber_cache (app_user_id, entitled, checked_at) VALUES (?1, ?2, ?3) ' +
+          'ON CONFLICT(app_user_id) DO UPDATE SET entitled = excluded.entitled, checked_at = excluded.checked_at'
+      )
+      .bind(id, entitled ? 1 : 0, nowMs)
+      .run();
+  } catch (_) {
+    // best effort
+  }
+  return entitled;
+}
+
+async function clientAllowed(request, env, db) {
+  const mode = env.TOMTOM_ACCESS;
+  if (mode === 'test') return testTokenOk(request, env);
+  if (mode === 'subscribers') return subscriberAllowed(request, env, db);
+  if (mode === 'both') return testTokenOk(request, env) || subscriberAllowed(request, env, db);
   return false;
 }
 const CELL_PRECISION = 4; // ~11 m
@@ -133,6 +205,10 @@ async function ensureSchema(db) {
       'CREATE TABLE IF NOT EXISTS ip_usage (ip TEXT NOT NULL, hour TEXT NOT NULL, ' +
         'calls INTEGER NOT NULL, PRIMARY KEY (ip, hour))'
     ),
+    db.prepare(
+      'CREATE TABLE IF NOT EXISTS subscriber_cache (app_user_id TEXT PRIMARY KEY, ' +
+        'entitled INTEGER NOT NULL, checked_at INTEGER NOT NULL)'
+    ),
   ]);
   schemaReady = true;
 }
@@ -184,7 +260,12 @@ async function readCalls(db) {
 // days with no TomTom calls.
 async function prune(db) {
   await ensureSchema(db);
-  await db.prepare('DELETE FROM ip_usage WHERE hour < ?1').bind(ipCutoff()).run();
+  await db.batch([
+    db.prepare('DELETE FROM ip_usage WHERE hour < ?1').bind(ipCutoff()),
+    db
+      .prepare('DELETE FROM subscriber_cache WHERE checked_at < ?1')
+      .bind(Date.now() - 7 * 24 * 3600 * 1000),
+  ]);
 }
 
 async function handleLimit(request, env, ctx, url) {
@@ -198,13 +279,16 @@ async function handleLimit(request, env, ctx, url) {
   if (env.TOMTOM_ENABLED !== 'true') return json({ value: null, reason: 'disabled' }, 503);
   if (!env.TOMTOM_API_KEY) return json({ value: null, reason: 'not configured' }, 503);
   if (!env.USAGE_DB) return json({ value: null, reason: 'usage store missing' }, 503);
-  if (!clientAllowed(request, env)) return json({ value: null, reason: 'not allowed' }, 403);
   const db = env.USAGE_DB;
 
   try {
     await ensureSchema(db);
   } catch (_) {
     return json({ value: null, reason: 'usage store unavailable' }, 503);
+  }
+
+  if (!(await clientAllowed(request, env, db))) {
+    return json({ value: null, reason: 'not allowed' }, 403);
   }
 
   // Stops 2 + 4: daily and per-IP caps, reserved atomically before the call.

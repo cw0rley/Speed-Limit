@@ -27,6 +27,7 @@ import { TOMTOM_TEST_BUILD } from './lookup/tomtom';
 import Paywall from './subscription/Paywall';
 import SubscriptionNotice from './subscription/SubscriptionNotice';
 import {
+  getAppUserId,
   initSubscriptions,
   manageSubscription,
   paywallRequired,
@@ -126,8 +127,13 @@ const recentLimitChanges = [];
 // it), so a repeated route needs no download. TomTom answers are never stored.
 const areaStore = createAreaStore(AsyncStorage);
 
+// RevenueCat's id for this device, fetched once and sent with TomTom lookups
+// so the Worker can confirm an active subscription (TOMTOM_ACCESS=subscribers).
+let appUserId = null;
+
 const limitEngine = createLimitEngine({
   areaStore,
+  getAppUserId: () => appUserId,
   onLimit: (limit) => {
     recentLimitChanges.unshift({
       at: Date.now(),
@@ -427,7 +433,11 @@ export default function App() {
   const locked = paywallRequired(sub);
   const [paywallOpen, setPaywallOpen] = useState(false);
   useEffect(() => {
-    initSubscriptions();
+    initSubscriptions().then(() => {
+      getAppUserId().then((id) => {
+        appUserId = id;
+      });
+    });
   }, []);
   useEffect(() => {
     lookupsPaused = locked;

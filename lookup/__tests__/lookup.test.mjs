@@ -470,3 +470,39 @@ test('areaStore: stale records are ignored', async () => {
   t += 5000;
   assert.equal(await store.get(LAT, LON), null, 'stale record is not');
 });
+
+// ---------------------------------------------------------------------------
+// Worker entitlement rules (pure parts of proxy/worker.js)
+// ---------------------------------------------------------------------------
+import { isEntitled, validAppUserId } from '../../proxy/worker.js';
+
+test('worker: entitlement is active only until it expires', () => {
+  const now = Date.parse('2026-09-26T12:00:00Z');
+  const body = (expires) => ({ subscriber: { entitlements: { pro: { expires_date: expires } } } });
+  assert.equal(isEntitled(body('2026-09-26T12:00:01Z'), now), true);
+  assert.equal(isEntitled(body('2026-09-26T11:59:59Z'), now), false);
+  assert.equal(isEntitled(body(null), now), true, 'lifetime grant');
+  assert.equal(isEntitled(body('nonsense'), now), false);
+  assert.equal(isEntitled({ subscriber: { entitlements: {} } }, now), false);
+  assert.equal(isEntitled({}, now), false);
+  assert.equal(isEntitled(null, now), false);
+});
+
+test('worker: app user ids are validated before use', () => {
+  assert.equal(validAppUserId('$RCAnonymousID:8f3b1c2d4e5f6a7b8c9d0e1f2a3b4c5d'), true);
+  assert.equal(validAppUserId('short'), false);
+  assert.equal(validAppUserId('bad/../id'), false);
+  assert.equal(validAppUserId('x'.repeat(200)), false);
+  assert.equal(validAppUserId(null), false);
+});
+
+test('tomtom client: sends the subscription id when there is no test token', async () => {
+  let seen;
+  await fetchTomTomLimit(1, 2, null, {
+    clientToken: '',
+    appUserId: 'user-123456',
+    fetchImpl: async (url, opts) => { seen = opts; return { ok: true, status: 200, json: async () => ({ value: null }) }; },
+  });
+  assert.equal(seen.headers['X-App-User-Id'], 'user-123456');
+  assert.equal(seen.headers['X-Client-Token'], undefined);
+});

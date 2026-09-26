@@ -21,9 +21,17 @@ export async function fetchTomTomLimit(
   lat,
   lon,
   heading,
-  { signal, fetchImpl, proxyUrl = PROXY_URL, clientToken = BUILD_CLIENT_TOKEN, road = null } = {}
+  {
+    signal,
+    fetchImpl,
+    proxyUrl = PROXY_URL,
+    clientToken = BUILD_CLIENT_TOKEN,
+    appUserId = null, // RevenueCat id; the Worker checks the subscription
+    road = null,
+  } = {}
 ) {
-  if (!clientToken) return { status: 'backoff' }; // this build isn't allowed to use TomTom
+  // Nothing to identify this device with: the Worker would refuse anyway.
+  if (!clientToken && !appUserId) return { status: 'backoff' };
 
   // 4 decimals (~11 m): all the precision a speed-limit lookup needs, and what
   // the privacy policy promises.
@@ -31,13 +39,10 @@ export async function fetchTomTomLimit(
   if (heading != null && heading >= 0) url += `&heading=${Math.round(heading)}`;
   if (road) url += `&road=${encodeURIComponent(road)}`;
   try {
-    const res = await fetchWithTimeout(
-      url,
-      { headers: { 'X-Client-Token': clientToken } },
-      TIMEOUT_MS,
-      signal,
-      fetchImpl
-    );
+    const headers = {};
+    if (clientToken) headers['X-Client-Token'] = clientToken;
+    if (appUserId) headers['X-App-User-Id'] = appUserId;
+    const res = await fetchWithTimeout(url, { headers }, TIMEOUT_MS, signal, fetchImpl);
     if (res.status === 403 || res.status === 429 || res.status === 503) return { status: 'backoff' };
     if (!res.ok) return { status: 'error' };
     const data = await res.json();
