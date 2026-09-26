@@ -11,8 +11,7 @@ Play Store; also targets **CarPlay** (full-screen custom sign) on iOS.
 > describes the app *as it is today*; update it as roadmap phases land.
 
 > **Orient here first.** This file is the source of truth for how the app is wired. The root
-> `README.md` is user-facing and lags behind (it still describes HERE lookup and a "keep screen
-> on" toggle that no longer exist — trust this file over it).
+> `README.md` is the short user-facing version (rewritten 2026-09-26 to match).
 
 ## Stack (current)
 
@@ -273,12 +272,13 @@ Dashboard on iOS 26+. Work is on branch **`feat/carplay-live-activity`** — EAS
   (CarPlay voice), `ITSAppUsesNonExemptEncryption: false`, `NSSupportsLiveActivities: true`.
   `supportsTablet: false`. `appleTeamId: N27NV97893`.
 - Android permissions: `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`.
-- Plugins: `expo-location` (When-In-Use text, `isIosBackgroundLocationEnabled: true`, Always
-  text), `./plugins/withCarPlay`, `@bacons/apple-targets`.
+- Plugins (order matters): `expo-location` (When-In-Use text, `isIosBackgroundLocationEnabled:
+  true`, Always text), `./plugins/withCarPlay`, `@bacons/apple-targets`,
+  `./plugins/withoutBackgroundFetch` (strips the `fetch` background mode that
+  expo-task-manager's plugin always adds — the app only uses background **location**; runs last).
 - EAS project id: `c659ab4d-9909-44da-b96b-00aad54ceb97`.
-- **Background location is iOS-only** (`UIBackgroundModes: location`, plus `fetch` added by a
-  dependency — consider removing before store review). It is only used while drive mode is on.
-  Android stays foreground-only.
+- **Background location is iOS-only** — `UIBackgroundModes` is now exactly `['location']`, used
+  only while drive mode is on. Android stays foreground-only.
 
 ## Build & submit (EAS — `eas.json`)
 
@@ -370,6 +370,7 @@ speed-limit/
   package.json           # deps (Expo SDK 54 / RN 0.81 / React 19)
   babel.config.js
   plugins/withCarPlay.js # config plugin: carplay-driving-task entitlement, scenes, AppDelegate hook
+  plugins/withoutBackgroundFetch.js # drops the unused `fetch` background mode
   targets/live-activity/ # SwiftUI Live Activity extension (CarPlay Dashboard / Lock Screen)
   modules/speed-limit-activity/ # local Expo module: JS -> ActivityKit bridge
   lookup/                # speed-limit engine: OSM area match + TomTom fallback (+ __tests__)
