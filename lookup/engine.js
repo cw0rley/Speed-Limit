@@ -95,6 +95,7 @@ export function createLimitEngine({
   let pending = { key: null, count: 0 };
   let lastConfirmedAt = 0;
   let lastFixAt = null;
+  let prevFix = null; // previous position, sent so the Worker can snap to the road
   let disposed = false;
   const inflight = new Set(); // AbortControllers of running requests
 
@@ -242,6 +243,7 @@ export function createLimitEngine({
       signal: req.signal,
       road,
       appUserId: getAppUserId(),
+      prev: prevFix,
     })
       .then((r) => {
         if (disposed || gen !== tomtomGen) return;
@@ -344,6 +346,10 @@ export function createLimitEngine({
     }
 
     recordStats(f);
+    // Kept at least ~50 m back so a snap trace has a usable length.
+    if (!prevFix || Math.hypot((f.lat - prevFix.lat) * 111320, (f.lon - prevFix.lon) * 85000) > 50) {
+      prevFix = { lat: f.lat, lon: f.lon };
+    }
     onStats(stats);
   }
 

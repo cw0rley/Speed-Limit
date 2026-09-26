@@ -506,3 +506,47 @@ test('tomtom client: sends the subscription id when there is no test token', asy
   assert.equal(seen.headers['X-App-User-Id'], 'user-123456');
   assert.equal(seen.headers['X-Client-Token'], undefined);
 });
+
+// ---------------------------------------------------------------------------
+// Snap to Roads (highways) — Worker helpers
+// ---------------------------------------------------------------------------
+import { limitFromSnap, parsePoint, useSnapFor } from '../../proxy/worker.js';
+
+test('worker: snap is used only for motorway-like classes', () => {
+  for (const c of ['motorway', 'trunk', 'motorway_link', 'primary_link']) {
+    assert.equal(useSnapFor(c), true, c);
+  }
+  for (const c of ['residential', 'primary', 'secondary', 'tertiary', '', null]) {
+    assert.equal(useSnapFor(c), false, String(c));
+  }
+});
+
+test('worker: point validation', () => {
+  assert.equal(parsePoint('-74.4569,40.5072'), '-74.4569,40.5072');
+  assert.equal(parsePoint('200,40'), null);
+  assert.equal(parsePoint('-74.4569'), null);
+  assert.equal(parsePoint('a,b'), null);
+  assert.equal(parsePoint(null), null);
+});
+
+test('worker: snap response -> the limit where the driver now is', () => {
+  const seg = (value, unit) => ({ properties: { speedLimits: { value, unit, type: 'Maximum' } } });
+  assert.deepEqual(limitFromSnap({ route: [seg(45, 'mph'), seg(55, 'mph')] }), { value: 55, unit: 'mph' });
+  assert.deepEqual(limitFromSnap({ route: [seg(80, 'kmph')] }), { value: 80, unit: 'kmh' });
+  // Skips trailing segments that have no limit.
+  assert.deepEqual(limitFromSnap({ route: [seg(55, 'mph'), { properties: {} }] }), { value: 55, unit: 'mph' });
+  assert.equal(limitFromSnap({ route: [] }), null);
+  assert.equal(limitFromSnap(null), null);
+});
+
+test('tomtom client: sends the previous point for snapping', async () => {
+  let seen;
+  await fetchTomTomLimit(40.5072, -74.4569, 290, {
+    clientToken: 't',
+    proxyUrl: 'https://proxy.test',
+    road: 'motorway',
+    prev: { lat: 40.5058, lon: -74.4551 },
+    fetchImpl: async (url) => { seen = url; return { ok: true, status: 200, json: async () => ({ value: null }) }; },
+  });
+  assert.match(seen, /&road=motorway&prev=-74\.45510,40\.50580$/);
+});

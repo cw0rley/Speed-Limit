@@ -7,7 +7,8 @@ Keeps the TomTom API key off the phone and hard-limits how often TomTom is calle
 | Route | What it does |
 |---|---|
 | `GET /limit?lat=&lon=[&heading=]` | Speed limit from TomTom Reverse Geocode (`returnSpeedLimit=true`). Returns `{"value":45,"unit":"mph","source":"tomtom"}` or `{"value":null}`. `429` = capped / rate limited, `503` = switched off or not configured. |
-| `GET /usage` | Today's TomTom call count vs. the daily cap. |
+| `GET /usage` | Today's TomTom + Snap to Roads call counts vs. their caps. |
+| `GET /snap?points=lon,lat;lon,lat` | Diagnostic: raw Snap to Roads answer for a trace (test token, same caps). |
 | `GET /here-route` | Always `410`. HERE is permanently off (it billed ~$1,000); old app builds still call this. |
 
 ## No-billing safeguards
@@ -20,6 +21,10 @@ Keeps the TomTom API key off the phone and hard-limits how often TomTom is calle
 5. **No shared server cache** — TomTom T&Cs §11.4 forbid caching results to serve multiple users. The app caches answers for itself only.
 6. Any database error **denies** the call.
 7. Everything runs on Cloudflare's free tier (Workers + D1). On the Workers **Free** plan, exceeding a limit makes requests fail — it doesn't bill. Check your plan: Cloudflare dashboard → Workers & Pages → Plans.
+
+**Which TomTom product:** `motorway` / `trunk` / `*_link` → **Snap to Roads** (needs `prev=`),
+everything else → **Reverse Geocode**. Snap's free allowance is 2,500/month (vs 20,000), so it has
+its own daily ceiling (`MAX_SNAP_DAILY_CAP = 80`, `SNAP_DAILY_CAP` var).
 
 The app adds its own spacing (at most one TomTom call per 30 s per device, 10-minute back-off after a `429`/`503`) and only asks TomTom when OpenStreetMap has no answer.
 

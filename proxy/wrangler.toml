@@ -34,3 +34,6 @@ TOMTOM_ACCESS = "test"
 # Daily TomTom calls. Can only LOWER the built-in ceiling of 600.
 # 200 while only test builds use it.
 DAILY_CAP = "200"
+# Snap to Roads calls (motorways/ramps only). Smaller free allowance
+# (2,500/month), so its own ceiling of 80/day can only be lowered.
+SNAP_DAILY_CAP = "40"

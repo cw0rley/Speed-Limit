@@ -34,6 +34,12 @@
 // Any failure in the safety machinery (database error, etc.) DENIES the call.
 // ──────────────────────────────────────────────────────────────────────────────
 //
+// GET /snap?points=lon,lat;lon,lat[&headings=a;b] is a DIAGNOSTIC route for
+// comparing TomTom Snap to Roads with Reverse Geocode on roads where reverse
+// geocoding finds nothing (motorways, ramps). Same access gate and caps. Snap
+// to Roads has a much smaller free allowance (2,500/month vs 20,000), so it is
+// not used by the app.
+//
 // GET /here-route is permanently disabled (410). Old app builds still in the
 // wild call it; returning 410 here means re-enabling the HERE key can never
 // silently resume HERE billing.
@@ -42,10 +48,64 @@
 // never raise it: 600 × 31 = 18,600 < TomTom's 20,000 free requests/month.
 const MAX_DAILY_CAP = 600;
 const PER_IP_HOURLY_CAP = 60;
+// Snap to Roads has a much smaller free allowance than Reverse Geocode
+// (2,500 vs 20,000 per month), so it gets its own, tighter daily ceiling and
+// is used only for roads where reverse geocoding fails: motorways and ramps.
+const MAX_SNAP_DAILY_CAP = 80; // 80 × 31 = 2,480 < 2,500
 
 function dailyCap(env) {
   const n = Number(env.DAILY_CAP);
   return Number.isFinite(n) && n >= 0 ? Math.min(Math.floor(n), MAX_DAILY_CAP) : MAX_DAILY_CAP;
+}
+
+function snapCap(env) {
+  const n = Number(env.SNAP_DAILY_CAP);
+  return Number.isFinite(n) && n >= 0
+    ? Math.min(Math.floor(n), MAX_SNAP_DAILY_CAP)
+    : MAX_SNAP_DAILY_CAP;
+}
+
+// Reverse geocoding returns the nearest ADDRESSED street, which on a motorway
+// is often a side street (or nothing). For these classes, snap the GPS trace to
+// the road network instead.
+const SNAP_CLASSES = new Set([
+  'motorway',
+  'trunk',
+  'motorway_link',
+  'trunk_link',
+  'primary_link',
+  'secondary_link',
+]);
+
+export function useSnapFor(roadClass) {
+  return SNAP_CLASSES.has(roadClass || '');
+}
+
+// "lon,lat" pair -> validated string, or null.
+export function parsePoint(raw) {
+  if (typeof raw !== 'string') return null;
+  const m = raw.match(/^(-?\d{1,3}(?:\.\d{1,7})?),(-?\d{1,2}(?:\.\d{1,7})?)$/);
+  if (!m) return null;
+  const lon = Number(m[1]);
+  const lat = Number(m[2]);
+  if (Math.abs(lon) > 180 || Math.abs(lat) > 90) return null;
+  return `${lon},${lat}`;
+}
+
+// Snap to Roads answers with one entry per road segment along the trace; the
+// last one is where the driver is now.
+export function limitFromSnap(body) {
+  const route = body && body.route;
+  if (!Array.isArray(route) || route.length === 0) return null;
+  for (let i = route.length - 1; i >= 0; i--) {
+    const sl = route[i] && route[i].properties && route[i].properties.speedLimits;
+    const value = sl && Number(sl.value);
+    if (!Number.isFinite(value) || value <= 0) continue;
+    const unit = String(sl.unit || '').toLowerCase();
+    if (unit === 'mph') return { value: Math.round(value), unit: 'mph' };
+    if (unit === 'kmph' || unit === 'km/h' || unit === 'kph') return { value: Math.round(value), unit: 'kmh' };
+  }
+  return null;
 }
 
 // Constant-time string comparison.
@@ -183,12 +243,14 @@ function parseQuery(url) {
     heading != null && Number.isFinite(heading) && heading >= 0
       ? Math.round((((heading % 360) + 360) % 360) / 45) % 8
       : null;
-  const roadUse = ROAD_USE[url.searchParams.get('road')] || null;
+  const road = url.searchParams.get('road');
   return {
     lat: Number(lat.toFixed(CELL_PRECISION)),
     lon: Number(lon.toFixed(CELL_PRECISION)),
     sector,
-    roadUse,
+    roadUse: ROAD_USE[road] || null,
+    snap: useSnapFor(road),
+    prev: parsePoint(url.searchParams.get('prev')),
   };
 }
 
@@ -200,6 +262,9 @@ async function ensureSchema(db) {
   await db.batch([
     db.prepare(
       'CREATE TABLE IF NOT EXISTS tomtom_usage (day TEXT PRIMARY KEY, calls INTEGER NOT NULL)'
+    ),
+    db.prepare(
+      'CREATE TABLE IF NOT EXISTS snap_usage (day TEXT PRIMARY KEY, calls INTEGER NOT NULL)'
     ),
     db.prepare(
       'CREATE TABLE IF NOT EXISTS ip_usage (ip TEXT NOT NULL, hour TEXT NOT NULL, ' +
@@ -251,9 +316,20 @@ async function reserveCall(db, ip, cap) {
   return { granted, dayCalls: Number(row.day_calls), ipCalls: Number(row.ip_calls) };
 }
 
-async function readCalls(db) {
-  const row = await db.prepare('SELECT calls FROM tomtom_usage WHERE day = ?1').bind(today()).first();
+async function readCalls(db, table = 'tomtom_usage') {
+  const row = await db.prepare(`SELECT calls FROM ${table} WHERE day = ?1`).bind(today()).first();
   return row ? Number(row.calls) : 0;
+}
+
+// Snap to Roads calls are counted against their own daily cap as well as the
+// shared one, so the smaller free allowance can't be exhausted.
+async function reserveSnap(db, cap) {
+  const day = today();
+  const results = await db.batch([
+    db.prepare('INSERT OR IGNORE INTO snap_usage (day, calls) VALUES (?1, 0)').bind(day),
+    db.prepare('UPDATE snap_usage SET calls = calls + 1 WHERE day = ?1 AND calls < ?2').bind(day, cap),
+  ]);
+  return results[1].meta && results[1].meta.changes === 1;
 }
 
 // Daily cron (wrangler.toml [triggers]) — deletes expired per-IP rows even on
@@ -305,6 +381,31 @@ async function handleLimit(request, env, ctx, url) {
     return json({ value: null, reason }, 429);
   }
 
+  // Motorways/ramps: snap the trace to the road network instead of reverse
+  // geocoding (which returns the nearest addressed street, often wrong there).
+  if (q.snap && q.prev) {
+    if (!(await reserveSnap(db, snapCap(env)).catch(() => false))) {
+      return json({ value: null, reason: 'snap cap reached' }, 429);
+    }
+    const snapUrl = new URL('https://api.tomtom.com/snapToRoads/1');
+    snapUrl.searchParams.set('key', env.TOMTOM_API_KEY);
+    snapUrl.searchParams.set('points', `${q.prev};${q.lon},${q.lat}`);
+    snapUrl.searchParams.set('vehicleType', 'PassengerCar');
+    snapUrl.searchParams.set('measurementSystem', 'imperial');
+    snapUrl.searchParams.set('fields', '{route{properties{id,speedLimits{value,unit,type}}}}');
+    try {
+      const snapRes = await fetch(snapUrl.toString(), { headers: { Accept: 'application/json' } });
+      if (snapRes.status === 401 || snapRes.status === 403 || snapRes.status === 429) {
+        return json({ value: null, reason: `provider ${snapRes.status}` }, 429);
+      }
+      if (!snapRes.ok) return json({ value: null, reason: `upstream ${snapRes.status}` }, 502);
+      const parsedSnap = limitFromSnap(await snapRes.json());
+      return json(parsedSnap ? { ...parsedSnap, source: 'tomtom' } : { value: null });
+    } catch (_) {
+      return json({ value: null, reason: 'upstream unreachable' }, 502);
+    }
+  }
+
   const upstream = new URL(
     `https://api.tomtom.com/search/2/reverseGeocode/${q.lat},${q.lon}.json`
   );
@@ -350,6 +451,58 @@ async function handleLimit(request, env, ctx, url) {
   return new Response(body, { headers: JSON_HEADERS });
 }
 
+// Diagnostic: TomTom Snap to Roads for a short GPS trace.
+async function handleSnap(request, env, url) {
+  if (request.method !== 'GET') return json({ error: 'method not allowed' }, 405);
+  if (env.TOMTOM_ENABLED !== 'true') return json({ error: 'disabled' }, 503);
+  if (!env.TOMTOM_API_KEY || !env.USAGE_DB) return json({ error: 'not configured' }, 503);
+  const db = env.USAGE_DB;
+  try {
+    await ensureSchema(db);
+  } catch (_) {
+    return json({ error: 'usage store unavailable' }, 503);
+  }
+  if (!(await clientAllowed(request, env, db))) return json({ error: 'not allowed' }, 403);
+
+  const points = url.searchParams.get('points') || '';
+  if (!/^[-0-9.,;]{7,400}$/.test(points) || points.split(';').length < 2) {
+    return json({ error: 'points must be "lon,lat;lon,lat" (2+ points)' }, 400);
+  }
+
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const cap = dailyCap(env);
+  let usage;
+  try {
+    usage = cap > 0 ? await reserveCall(db, ip, cap) : { granted: false };
+  } catch (_) {
+    return json({ error: 'usage store unavailable' }, 503);
+  }
+  if (!usage.granted) return json({ error: 'capped' }, 429);
+
+  const upstream = new URL('https://api.tomtom.com/snapToRoads/1');
+  upstream.searchParams.set('key', env.TOMTOM_API_KEY);
+  upstream.searchParams.set('points', points);
+  const headings = url.searchParams.get('headings');
+  if (headings && /^[0-9.;]{1,60}$/.test(headings)) upstream.searchParams.set('headings', headings);
+  upstream.searchParams.set('vehicleType', 'PassengerCar');
+  upstream.searchParams.set('measurementSystem', 'imperial');
+  upstream.searchParams.set('fields', '{route{properties{id,speedLimits{value,unit,type}}}}');
+
+  let res;
+  try {
+    res = await fetch(upstream.toString(), { headers: { Accept: 'application/json' } });
+  } catch (_) {
+    return json({ error: 'upstream unreachable' }, 502);
+  }
+  const text = await res.text();
+  if (!res.ok) return json({ error: `provider ${res.status}`, body: text.slice(0, 400) }, 502);
+  try {
+    return json({ snap: JSON.parse(text) });
+  } catch (_) {
+    return json({ error: 'bad upstream body', body: text.slice(0, 400) }, 502);
+  }
+}
+
 // GET /usage — today's TomTom call count vs. the cap (no secrets exposed).
 async function handleUsage(env) {
   if (!env.USAGE_DB) return json({ error: 'usage store missing' }, 503);
@@ -359,6 +512,8 @@ async function handleUsage(env) {
     date: today(),
     tomtomCalls: calls,
     dailyCap: dailyCap(env),
+    snapCalls: await readCalls(env.USAGE_DB, 'snap_usage'),
+    snapDailyCap: snapCap(env),
     enabled: env.TOMTOM_ENABLED === 'true',
     access: env.TOMTOM_ACCESS || 'none',
   });
@@ -370,6 +525,8 @@ export default {
     switch (url.pathname) {
       case '/limit':
         return handleLimit(request, env, ctx, url);
+      case '/snap':
+        return handleSnap(request, env, url);
       case '/usage':
         return handleUsage(env);
       case '/here-route':

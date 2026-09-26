@@ -28,6 +28,7 @@ export async function fetchTomTomLimit(
     clientToken = BUILD_CLIENT_TOKEN,
     appUserId = null, // RevenueCat id; the Worker checks the subscription
     road = null,
+    prev = null, // { lat, lon } — previous fix, lets the Worker snap to the road
   } = {}
 ) {
   // Nothing to identify this device with: the Worker would refuse anyway.
@@ -38,6 +39,9 @@ export async function fetchTomTomLimit(
   let url = `${proxyUrl}/limit?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
   if (heading != null && heading >= 0) url += `&heading=${Math.round(heading)}`;
   if (road) url += `&road=${encodeURIComponent(road)}`;
+  if (prev && Number.isFinite(prev.lat) && Number.isFinite(prev.lon)) {
+    url += `&prev=${prev.lon.toFixed(5)},${prev.lat.toFixed(5)}`;
+  }
   try {
     const headers = {};
     if (clientToken) headers['X-Client-Token'] = clientToken;

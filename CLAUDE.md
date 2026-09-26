@@ -325,10 +325,15 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
   that's ~$1.75/user/month, above the earlier $0.45–0.90 estimate. Pricing and further call
   reduction (e.g. persisting the per-road cache across sessions) need to account for this.
   TomTom case CS0014609: acknowledged 2026-09-23 ("forwarded to the concerned team"), no answers yet.
-- **TomTom reverse-geocode accuracy concern:** on the NJ Turnpike bridge (OSM 55 mph) it returned
-  **25 mph** (a nearby local street) without a road filter, and **no limit** with
-  `roadUse=LimitedAccess`. The app now sends the matched OSM road class (`road=`), which the Worker
-  maps to `roadUse`. Evaluate TomTom **Snap to Roads** (on the key) for highways next.
+- **Provider choice by road class (2026-09-26).** TomTom **Reverse Geocode** returns the nearest
+  *addressed* street: on the NJ Turnpike bridge it gave **25 mph** (a side street) unfiltered and
+  **nothing** with `roadUse=LimitedAccess`. **Snap to Roads** returned the correct **55 mph** there.
+  So the Worker now uses **Snap to Roads for `motorway` / `trunk` / `*_link`** (`useSnapFor`) when
+  the app also sends `prev=` (the previous fix), and Reverse Geocode for everything else. Snap's
+  free allowance is much smaller (**2,500/month vs 20,000**), so it has its own ceiling
+  `MAX_SNAP_DAILY_CAP = 80` (`SNAP_DAILY_CAP` var, currently 40) counted in D1 `snap_usage`;
+  `/usage` reports `snapCalls` / `snapDailyCap`. `GET /snap` is a diagnostic route (test token,
+  same caps) for comparing the two.
 - `/here-route` → 410 live, `/usage` live. D1 `speed-limit-usage` (id `a75a26ec-…`);
   secrets `TOMTOM_API_KEY`, `TEST_CLIENT_TOKEN`. **Store builds must not use TomTom** until
   TomTom answers the licensing inquiry — case **CS0014609** (opened 2026-09-17 by mistake with
