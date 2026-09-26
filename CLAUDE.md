@@ -61,6 +61,11 @@ feeds it fixes from `handleLocation`.
      back-off (15 s → 2 min). Every fix is then **matched to a road on the device**
      (`matchRoad`: distance + heading agreement + one-way penalty).
   2. **Matched road with OSM maxspeed** → shown (`source: 'osm'`).
+  2b. **Matched road without maxspeed, but another piece of the SAME road has one** → inherited
+     (`inferRoadLimits` / `roadKey` in `osmArea.js`: key = highway class + `ref` or `name`, only
+     when every tagged piece agrees). Shown as `source: 'osm'` with `inferred: true`; counted in
+     `inferredSeconds`. **Costs no paid lookup** — OSM splits roads into many ways and often tags
+     only some of them.
   3. **Matched road without maxspeed** → TomTom **once per road + direction** for the session
      (`wayTomTom` map). While TomTom is unavailable (spacing / capped / off) the road shows
      `--` — the previous road's limit is **never** carried over.
@@ -77,8 +82,12 @@ feeds it fixes from `handleLocation`.
     (OSM / TomTom / none), area downloads + failures, TomTom calls / hits / misses / back-offs /
     errors. `App.js` persists them to AsyncStorage (`@speed_limit_lookup_stats`, every 30 s) and
     shows them in **Settings → Lookup stats** (with Reset).
+- **`areaStore.js`** — `createAreaStore(storage)`: keeps downloaded **OSM** areas on the device
+  (AsyncStorage) bucketed by a ~1.1 km cell, max 15 records, 400 KB each, 14-day age limit. A
+  repeated route needs **no download** (`areaFromStore` in stats). **TomTom answers are never
+  stored here** (their caching terms are still unanswered — case CS0014609).
 - **`osmArea.js`** — Overpass query (`convert` trims output to highway / maxspeed /
-  maxspeed:forward / maxspeed:backward / oneway / name; ~75 KB for a suburban box), parsing
+  maxspeed:forward / maxspeed:backward / oneway / name / ref; ~75 KB for a suburban box), parsing
   (blank tags → `undefined`, motorways implied one-way), `matchRoad`, `areaBoxFor`. Endpoints
   `overpass-api.de`, then `overpass.kumi.systems`, 15 s timeout each, identifying `User-Agent`.
 - **`tomtom.js`** — `GET ${PROXY_URL}/limit?lat&lon&heading` (5 s timeout) →

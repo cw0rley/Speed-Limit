@@ -357,3 +357,116 @@ test('engine: a hung map download is abandoned and retried (no timers needed)', 
   await h.fix(0, -80);
   assert.equal(h.shown.at(-1), '35');
 });
+
+// ---------------------------------------------------------------------------
+// Cost savings: inherit limits from the same road; reuse OSM data across drives
+// ---------------------------------------------------------------------------
+import { createAreaStore } from '../areaStore.js';
+import { inferRoadLimits, roadKey } from '../osmArea.js';
+
+function splitRoadJson() {
+  // "Main St" in three pieces west->east: the middle one has no maxspeed.
+  // "Other Rd" is two pieces that disagree, so nothing may be inherited.
+  const seg = (id, fromE, toE, north, tags) => ({
+    type: 'way', id,
+    geometry: { type: 'LineString', coordinates: [[LON + dLon(fromE), LAT + dLat(north)], [LON + dLon(toE), LAT + dLat(north)]] },
+    tags: { highway: 'secondary', maxspeed: '', mf: '', mb: '', oneway: '', ref: '', ...tags },
+  });
+  return {
+    elements: [
+      seg(10, -600, -200, 0, { name: 'Main St', maxspeed: '40 mph' }),
+      seg(11, -200, 200, 0, { name: 'Main St' }),
+      seg(12, 200, 600, 0, { name: 'Main St', maxspeed: '40 mph' }),
+      seg(20, -600, 0, 200, { name: 'Other Rd', maxspeed: '30 mph' }),
+      seg(21, 0, 600, 200, { name: 'Other Rd', maxspeed: '50 mph' }),
+      seg(22, -600, 600, 400, { name: 'Other Rd' }),
+    ],
+  };
+}
+
+test('roadKey / inferRoadLimits: agreeing pieces only, class-scoped', () => {
+  assert.equal(roadKey({ highway: 'secondary', name: 'Main St' }), 'secondary|main st');
+  assert.equal(roadKey({ highway: 'secondary_link', ref: 'NJ 18', name: 'x' }), 'secondary|nj 18');
+  assert.equal(roadKey({ highway: 'residential' }), null);
+  const inferred = inferRoadLimits(parseArea(splitRoadJson(), syntheticBox).ways);
+  assert.deepEqual(inferred.get('secondary|main st'), { value: 40, unit: 'mph' });
+  assert.equal(inferred.has('secondary|other rd'), false, 'conflicting pieces are not inherited');
+});
+
+test('engine: untagged piece of a known road costs no TomTom call', async () => {
+  let clock = 9_000_000;
+  const calls = { tomtom: 0 };
+  const shown = [];
+  const engine = createLimitEngine({
+    now: () => clock,
+    fetchArea: async () => parseArea(splitRoadJson(), syntheticBox),
+    fetchTomTom: async () => { calls.tomtom += 1; return { status: 'hit', limit: { value: 99, unit: 'mph', source: 'tomtom' } }; },
+    onLimit: (l) => shown.push(l && `${l.value}${l.inferred ? ' (inherited)' : ''}`),
+  });
+  for (let e = -500; e <= 500; e += 20) {
+    clock += 1000;
+    const p = at(0, e);
+    engine.update({ ...p, heading: 90, speed: 20, accuracy: 5 });
+    await flush();
+  }
+  assert.equal(calls.tomtom, 0, 'no paid lookup on the untagged middle piece');
+  assert.deepEqual(shown, ['40'], 'one limit, never dropped');
+  assert.ok(engine.getStats().inferredSeconds > 0, 'inherited time is tracked');
+});
+
+test('areaStore: a second drive needs no download', async () => {
+  const mem = new Map();
+  const storage = {
+    getItem: async (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: async (k, v) => { mem.set(k, v); },
+    removeItem: async (k) => { mem.delete(k); },
+  };
+  const store = createAreaStore(storage);
+  const raw = splitRoadJson().elements;
+
+  const drive = async () => {
+    let clock = 10_000_000;
+    let downloads = 0;
+    const engine = createLimitEngine({
+      now: () => clock,
+      areaStore: store,
+      fetchArea: async (box) => {
+        downloads += 1;
+        const a = parseArea({ elements: raw }, box);
+        a.raw = raw;
+        return a;
+      },
+      fetchTomTom: async () => ({ status: 'backoff' }),
+    });
+    for (let e = -400; e <= 400; e += 50) {
+      clock += 1000;
+      const p = at(0, e);
+      engine.update({ ...p, heading: 90, speed: 20, accuracy: 5 });
+      await flush();
+    }
+    return { downloads, stats: engine.getStats(), limit: engine.getCurrent() };
+  };
+
+  const first = await drive();
+  assert.equal(first.downloads, 1);
+  const second = await drive();
+  assert.equal(second.downloads, 0, 'served from the device store');
+  assert.equal(second.stats.areaFromStore, 1);
+  assert.equal(second.limit.value, 40, 'and still shows the limit');
+});
+
+test('areaStore: stale records are ignored', async () => {
+  const mem = new Map();
+  const storage = {
+    getItem: async (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: async (k, v) => { mem.set(k, v); },
+    removeItem: async (k) => { mem.delete(k); },
+  };
+  let t = 1_000_000_000;
+  const store = createAreaStore(storage, { maxAgeMs: 1000, now: () => t });
+  const box = areaBoxFor(LAT, LON, null, 0);
+  await store.put(LAT, LON, splitRoadJson().elements, box);
+  assert.ok(await store.get(LAT, LON), 'fresh record is used');
+  t += 5000;
+  assert.equal(await store.get(LAT, LON), null, 'stale record is not');
+});

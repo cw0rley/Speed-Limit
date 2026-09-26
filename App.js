@@ -21,6 +21,7 @@ import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
 import SpeedLimitActivity from './modules/speed-limit-activity';
 import { createLimitEngine } from './lookup/engine';
+import { createAreaStore } from './lookup/areaStore';
 import { convertLimit } from './lookup/maxspeed';
 import { TOMTOM_TEST_BUILD } from './lookup/tomtom';
 import Paywall from './subscription/Paywall';
@@ -121,7 +122,12 @@ let statsSavedAt = 0;
 const RECENT_CHANGES_MAX = 20;
 const recentLimitChanges = [];
 
+// OSM road data is kept on the device between drives (OSM's licence allows
+// it), so a repeated route needs no download. TomTom answers are never stored.
+const areaStore = createAreaStore(AsyncStorage);
+
 const limitEngine = createLimitEngine({
+  areaStore,
   onLimit: (limit) => {
     recentLimitChanges.unshift({
       at: Date.now(),
@@ -311,9 +317,11 @@ function LookupStats() {
   const rows = [
     ['Driving time', `${minutes} min`],
     ['Limit from OpenStreetMap', pct(stats.osmSeconds)],
+    ['  inherited from same road', pct(stats.inferredSeconds || 0)],
     ['Limit from TomTom', pct(stats.tomtomSeconds)],
     ['No limit shown', pct(stats.unknownSeconds)],
     ['Map downloads (failed / timed out)', `${stats.areaFetches} (${stats.areaFailures} / ${stats.areaTimeouts || 0})`],
+    ['Maps reused from device', `${stats.areaFromStore || 0}`],
     ['Limit changes', `${stats.limitChanges || 0}`],
     ['TomTom calls', `${stats.tomtomCalls}`],
     ['  found / none', `${stats.tomtomHits} / ${stats.tomtomMisses}`],

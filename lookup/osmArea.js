@@ -28,7 +28,7 @@ export function buildAreaQuery(box) {
   const bbox = `${box.south.toFixed(5)},${box.west.toFixed(5)},${box.north.toFixed(5)},${box.east.toFixed(5)}`;
   return `[out:json][timeout:12];
 way["highway"~"^(${DRIVABLE})$"](${bbox});
-convert way ::id=id(),::geom=geom(),highway=t["highway"],maxspeed=t["maxspeed"],mf=t["maxspeed:forward"],mb=t["maxspeed:backward"],oneway=t["oneway"],name=t["name"];
+convert way ::id=id(),::geom=geom(),highway=t["highway"],maxspeed=t["maxspeed"],mf=t["maxspeed:forward"],mb=t["maxspeed:backward"],oneway=t["oneway"],name=t["name"],ref=t["ref"];
 out geom;`;
 }
 
@@ -75,6 +75,7 @@ export function parseArea(json, box) {
       mb: blank(raw.mb),
       oneway: blank(raw.oneway),
       name: blank(raw.name),
+      ref: blank(raw.ref),
     };
     const pts = coords.map(([lon, lat]) => project(lat, lon, originLat, originLon, mpd));
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -86,7 +87,40 @@ export function parseArea(json, box) {
     }
     ways.push({ id: Number(el.id), tags, oneway: onewayOf(tags), pts, minX, minY, maxX, maxY });
   }
-  return { box, originLat, originLon, mpd, ways, fetchedAt: Date.now() };
+  return { box, originLat, originLon, mpd, ways, inferred: inferRoadLimits(ways), fetchedAt: Date.now() };
+}
+
+// OSM splits a road into many ways, and often only some of them carry a
+// maxspeed. Build "road identity -> limit" from the tagged ways so the
+// untagged pieces of the SAME road can reuse it instead of costing a paid
+// lookup. Only used when every tagged piece of that road agrees.
+export function inferRoadLimits(ways) {
+  const seen = new Map(); // key -> { limit, conflict }
+  for (const way of ways) {
+    const key = roadKey(way.tags);
+    if (!key) continue;
+    const limit = wayLimit(way.tags, null);
+    if (!limit) continue;
+    const prev = seen.get(key);
+    if (!prev) {
+      seen.set(key, { limit, conflict: false });
+    } else if (prev.limit.value !== limit.value || prev.limit.unit !== limit.unit) {
+      prev.conflict = true;
+    }
+  }
+  const out = new Map();
+  for (const [key, v] of seen) if (!v.conflict) out.set(key, v.limit);
+  return out;
+}
+
+// Identity of a road for inference: its number (ref) if it has one, else its
+// name — always combined with the highway class, so a service-road-like
+// "Main Street" can't inherit from a trunk "Main Street".
+export function roadKey(tags) {
+  if (!tags || !tags.highway) return null;
+  const cls = tags.highway.replace(/_link$/, '');
+  const id = (tags.ref || tags.name || '').trim().toLowerCase();
+  return id ? `${cls}|${id}` : null;
 }
 
 export function areaContains(area, lat, lon, marginM = 0) {
@@ -141,13 +175,18 @@ export function matchRoad(area, lat, lon, heading, speedMps, accuracyM) {
     }
   }
   if (!best) return null;
+  const own = wayLimit(best.way.tags, best.forward);
+  // Fall back to another piece of the same road before any paid lookup.
+  const key = own ? null : roadKey(best.way.tags);
+  const inherited = key && area.inferred ? area.inferred.get(key) || null : null;
   return {
     wayId: best.way.id,
-    name: best.way.tags.name || null,
+    name: best.way.tags.name || best.way.tags.ref || null,
     highway: best.way.tags.highway,
     forward: best.forward,
     dist: best.dist,
-    limit: wayLimit(best.way.tags, best.forward),
+    limit: own || inherited,
+    inferred: !own && !!inherited,
   };
 }
 
@@ -175,7 +214,11 @@ export async function fetchArea(box, { signal, fetchImpl, endpoints = OVERPASS_E
         lastError = new Error(`overpass ${res.status}`);
         continue;
       }
-      return parseArea(await res.json(), box);
+      const json = await res.json();
+      const area = parseArea(json, box);
+      // Kept so the caller can store the raw data for reuse on later drives.
+      area.raw = (json && json.elements) || [];
+      return area;
     } catch (e) {
       if (signal && signal.aborted) throw e;
       lastError = e;

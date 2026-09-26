@@ -49,7 +49,8 @@ export function emptyStats() {
   return {
     since: Date.now(),
     movingSeconds: 0,
-    osmSeconds: 0, // moving with a limit from OSM
+    osmSeconds: 0, // moving with a limit from OSM (tagged on this road)
+    inferredSeconds: 0, // …from another piece of the same road
     tomtomSeconds: 0, // moving with a limit from TomTom
     unknownSeconds: 0, // moving with no limit shown
     areaFetches: 0,
@@ -59,6 +60,7 @@ export function emptyStats() {
     tomtomMisses: 0,
     tomtomBackoffs: 0,
     tomtomErrors: 0,
+    areaFromStore: 0, // areas served from the device's own store (no download)
     areaTimeouts: 0, // downloads abandoned by the watchdog
     limitChanges: 0, // how often the shown limit changed
   };
@@ -76,6 +78,7 @@ export function createLimitEngine({
   onLimit = () => {},
   onStats = () => {},
   initialStats = null,
+  areaStore = null, // lookup/areaStore.js — OSM data reused across drives
 } = {}) {
   let area = null;
   let areaLoading = false;
@@ -130,6 +133,8 @@ export function createLimitEngine({
     (a == null && b == null) ||
     (a != null && b != null && a.value === b.value && a.unit === b.unit && a.source === b.source);
 
+  // Area downloads can come from the device's own store (free) or the network.
+
   // Apply a candidate { key, limit } with the 2-fix confirmation rule. Only an
   // ACCEPTED candidate counts as "confirmed" for the stale rule — otherwise a
   // stream of changing candidates (ramps, parallel roads) would keep an old
@@ -158,30 +163,42 @@ export function createLimitEngine({
       now() + Math.min(AREA_RETRY_MAX_MS, AREA_RETRY_BASE_MS * 2 ** (areaFailures - 1));
   }
 
-  function loadArea(fix) {
+  async function loadArea(fix) {
     if (areaLoading || now() < areaRetryAt) return;
     areaLoading = true;
     areaStartedAt = now();
-    stats.areaFetches += 1;
     const gen = ++areaGen;
     const req = newRequest();
     areaAbort = req;
     const box = areaBoxFor(fix.lat, fix.lon, fix.heading, fix.speed);
-    fetchArea(box, { signal: req.signal })
-      .then((a) => {
+    try {
+      // Free first: OSM data this device already downloaded (a commute needs
+      // no download at all after the first drive).
+      if (areaStore) {
+        const stored = await areaStore.get(fix.lat, fix.lon).catch(() => null);
         if (disposed || gen !== areaGen) return;
-        area = a;
-        areaFailures = 0;
-        areaRetryAt = 0;
-      })
-      .catch(() => {
-        if (disposed || gen !== areaGen) return;
-        areaFailed();
-      })
-      .finally(() => {
-        endRequest(req);
-        if (gen === areaGen) areaLoading = false;
-      });
+        if (stored) {
+          area = stored;
+          areaFailures = 0;
+          areaRetryAt = 0;
+          stats.areaFromStore += 1;
+          return;
+        }
+      }
+      stats.areaFetches += 1;
+      const a = await fetchArea(box, { signal: req.signal });
+      if (disposed || gen !== areaGen) return;
+      area = a;
+      areaFailures = 0;
+      areaRetryAt = 0;
+      if (areaStore && a.raw) areaStore.put(fix.lat, fix.lon, a.raw, box).catch(() => {});
+    } catch (_) {
+      if (disposed || gen !== areaGen) return;
+      areaFailed();
+    } finally {
+      endRequest(req);
+      if (gen === areaGen) areaLoading = false;
+    }
   }
 
   // Called on every fix: abandon requests that have hung.
@@ -272,7 +289,8 @@ export function createLimitEngine({
     if (fix.speed <= MOVING_MPS || dt === 0) return;
     stats.movingSeconds += dt;
     const src = current.limit && current.limit.source;
-    if (src === 'osm') stats.osmSeconds += dt;
+    if (src === 'osm' && current.limit.inferred) stats.inferredSeconds += dt;
+    else if (src === 'osm') stats.osmSeconds += dt;
     else if (src === 'tomtom') stats.tomtomSeconds += dt;
     else stats.unknownSeconds += dt;
   }
@@ -284,12 +302,17 @@ export function createLimitEngine({
     const f = { ...fix, speed, heading };
 
     checkWatchdogs();
-    if (areaNeedsRefresh(area, f.lat, f.lon)) loadArea(f);
+    if (areaNeedsRefresh(area, f.lat, f.lon)) loadArea(f).catch(() => {});
 
     if (f.accuracy == null || f.accuracy <= MAX_ACCURACY_M) {
       const m = area ? matchRoad(area, f.lat, f.lon, f.heading, f.speed, f.accuracy) : null;
       if (m && m.limit) {
-        propose(`w:${m.wayId}`, { ...m.limit, source: 'osm', road: m.name });
+        propose(`w:${m.wayId}`, {
+          ...m.limit,
+          source: 'osm',
+          road: m.name,
+          inferred: !!m.inferred,
+        });
       } else if (m) {
         // Road known, OSM has no limit for it: TomTom once per road+direction.
         const dir = m.forward == null ? 'x' : m.forward ? 'f' : 'b';
