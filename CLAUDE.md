@@ -336,9 +336,13 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
   same caps) for comparing the two.
 - `/here-route` → 410 live, `/usage` live. D1 `speed-limit-usage` (id `a75a26ec-…`);
   secrets `TOMTOM_API_KEY`, `TEST_CLIENT_TOKEN`. **Store builds must not use TomTom** until
-  TomTom answers the licensing inquiry — case **CS0014609** (opened 2026-09-17 by mistake with
-  the HERE text; corrected via a comment with `cut-paste/provider-inquiry-tomtom.txt`). HERE was
-  never contacted (requires an account with a card) and is ruled out.
+  TomTom answers the licensing questions. Case **CS0014609** is abandoned — it was opened with the
+  HERE text by mistake and TomTom Support answered *that*, ignoring the correction, then referred
+  licensing to sales. The short questions were sent via the **sales form** on 2026-09-28
+  (`cut-paste/provider-inquiry-tomtom-sales.txt`, Area of Interest "Web and Mobile Apps").
+  **Risk if the CarPlay answer never comes:** TomTom's "Automotive Usage" exclusion could cover a
+  CarPlay tile — worst case they cut the key off (no billing risk: free plan, no card, Worker caps).
+  Fallbacks: launch phone-only, or rely on OSM as the guaranteed base. HERE is ruled out.
 - **CarPlay Navigation entitlement was REFUSED** (Case-ID 21844634, 2026-09-16) — the `MapTemplate`
   approach on `feat/carplay-grid-display` is dead. Custom graphics now go through a Live Activity /
   widget (SwiftUI, no entitlement). The
