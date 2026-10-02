@@ -1,85 +1,117 @@
-# Speed Limit — Roadmap (v2: paid app, new data provider, CarPlay Live Activity)
+# Speed Limit — plan (v2)
 
-_Decided 2026-09-16. Research notes (with sources) are summarized at the bottom._
+_Last updated 2026-10-02. Decisions and research notes are at the bottom._
 
-## Decisions
+## What we're building
 
-| Area | Decision |
+The app shows your current speed and the posted limit for the road you're on, on the phone and —
+on iPhone — as a live tile on the **CarPlay Dashboard** and Lock Screen. It is becoming a **paid
+subscription** ($2.99/month, $24.99/year, 7-day free trial, no free tier).
+
+The whole project exists because two things broke: **HERE billed ~$1,000** unexpectedly (so it was
+switched off, leaving the store app barely able to find limits), and **Apple refused** the CarPlay
+Navigation entitlement (so the full-screen CarPlay sign is impossible).
+
+## How a speed limit is found (today)
+
+1. **OpenStreetMap, downloaded by area.** All drivable roads in ~1 mile ahead come down in one
+   request; every GPS fix is matched to a road on the device using distance, heading and one-way
+   direction. Downloaded areas are **kept on the phone for 14 days**, so a commute re-downloads
+   nothing.
+2. **Inherited within a road.** OSM splits roads into many pieces and tags only some. An untagged
+   piece uses the limit from another piece of the same road when they all agree. Free.
+3. **TomTom, only if OSM can't answer**, through our Cloudflare Worker:
+   - **highways / ramps → Snap to Roads** (reverse geocoding returns a nearby side street there),
+   - **everything else → Reverse Geocode**,
+   - once per road per drive, at most one call per 30 s, with hard daily caps.
+4. **Nothing known → `--`.** The previous road's limit is never shown.
+
+## Money
+
+| | |
 |---|---|
-| Scope | **Evolve the existing app** (same bundle id `com.claytonrugby.speedlimit`, same store listings). Upgrade Expo to **SDK 56+**. Split `App.js` into modules as we touch it. |
-| Business model | **Subscription only** — free download, free trial via introductory offer, then auto-renewing subscription. No free tier. |
-| Speed-limit data | **OSM first, TomTom fallback.** HERE ruled out 2026-09-21 (no card-free hard stop). TomTom Reverse Geocode (`returnSpeedLimit=true`) is called only when OSM has no `maxspeed`, and only through the Cloudflare Worker. HERE stays off. |
-| CarPlay | **Live Activity** (small family) on the CarPlay dashboard — no entitlement needed. The full-screen `MapTemplate` branch is dead — **Apple refused the Navigation entitlement** (Case-ID 21844634, 2026-09-16). |
+| Price | $2.99/month, $24.99/year, 7-day free trial |
+| Store fee | 15% (Small Business Program / Play) |
+| Data cost | TomTom free: 20,000 reverse-geocode + 2,500 snap per month, account-wide |
+| Measured | One real drive (2026-09-22, before the savings work) used **116 lookups** |
+| Risk | At that rate, ~3,500/user/month ≈ **$1.75/user/month** if paid — too close to the price |
 
-## Why these choices
+The savings work (steps 1–2 above) is meant to cut that a lot; **the next drive's numbers decide
+whether the price works.**
 
-- **Google Play cannot turn an existing free app into a paid-upfront app**, and a one-time price doesn't cover a per-user recurring API cost → in-app subscription.
-- **TomTom Freemium returns HTTP 429 instead of billing** when the free allowance (20k req/month, account-wide) runs out — the hard stop HERE never had. Pay-as-you-grow is ~US$0.50 / 1k (third-party figure, unverified).
-- **A CarPlay widget can't show live speed** (WidgetKit refreshes every ~15–60 min). A **Live Activity** can be updated by the app while it runs in the background, and appears in CarPlay on iOS 26+ without any CarPlay entitlement.
+## Never-billed-again rules
 
-## Phase 0 — Foundations
+1. TomTom account stays on the **free plan with no card**. Over the allowance it returns 429.
+2. The key lives **only** in the Cloudflare Worker; the app can't call TomTom directly.
+3. Worker caps: **600/day ceiling** (set to 200), **80/day snap ceiling** (set to 40), 60/hour per
+   device, counted in a database *before* each call, and it refuses if anything fails.
+4. **Kill switch**: one config change switches TomTom off.
+5. Old app versions can't reach HERE: the old route returns "gone".
+6. All of this was drilled live on 2026-09-17 and matched TomTom's own dashboard.
 
-- [ ] Upgrade Expo SDK 54 → 56+ (one SDK at a time, `npx expo install --fix`), check `@iternio/react-native-auto-play`, `react-native-nitro-modules`, `babel-preset-expo` (currently pinned to ^55 on SDK 54 — mismatch).
-- [ ] Split `App.js` into modules — `lookup/` done (2026-09-17); `carplay/`, `settings/`, UI components still to do.
-- [x] **Remove the embedded `HERE_API_KEY`** from `App.js` (done). Still to do: revoke it on the HERE account.
-- [x] Delete dead HERE code; Worker `/here-route` now returns 410 (deployed 2026-09-17).
+## Status
 
-## Phase 1 — Lookup rework (do first: no provider is safe without it)
+**Done**
+- OSM area download + on-device road matching, inheritance within a road, 14-day map reuse
+- TomTom behind the Worker with the caps, kill switch and test-only access
+- Snap to Roads for highways (verified: correct 55 mph where reverse geocoding gave nothing)
+- CarPlay Live Activity (Dashboard + Lock Screen + Dynamic Island), drive mode with idle stop
+- CarPlay text screen (Driving Task entitlement, which Apple did grant)
+- Fixes for the "stuck on 55" and frozen-screen bugs, with regression tests
+- Paywall, "becoming a subscription" banner, Settings subscription section — **switched off**
+- Worker can serve only active subscribers (RevenueCat), fails closed
+- Privacy policy rewritten; unused background mode removed; README rewritten
+- 36 automated tests
 
-- [x] **Fix the throttle** (replaced by the area-match engine in `lookup/`, 2026-09-17). Today: fetch if moved ≥40 m **or** ≥15 s elapsed → ~1 call per 40 m at speed (~2,400/hr). New gate: require a minimum interval (e.g. ≥10 s) **and** movement to a new grid cell / new road; back off further when the limit hasn't changed.
-- [x] Cache **negative** results (OSM miss) per cell for a short TTL so unmapped roads don't hammer the paid fallback.
-- [x] Provider layer: `osm` → `tomtom`, each returning `{ value, unit, source }`.
-- [x] Worker route `GET /limit?lat&lon` → TomTom Reverse Geocode with `returnSpeedLimit=true`; key as Worker secret `TOMTOM_API_KEY`.
-- [x] Worker safety: D1 daily cap + per-IP cap, fail closed, kill switch (OFF), `/usage`. Shared cache dropped — TomTom T&Cs §11.4 forbid it.
-- [x] **Cap drill** (passed 2026-09-17; TomTom dashboard matched) before enabling TomTom: cap 5 → 10 calls → 6–10 refused, TomTom dashboard shows 5, kill switch stops all; ~10-call billing-category check.
-- [ ] Stay on TomTom **Freemium** until usage is understood; set up alerts before moving to pay-as-you-grow.
-- [x] Read TomTom T&Cs (shared caching forbidden; free licence "Evaluation Use"; "Automotive Usage" excluded) — written questions sent to TomTom and HERE 2026-09-17; awaiting replies.
+**Waiting on you**
+- Submit + drive **build 30**, then send Lookup stats
+- Store setup: Apple agreements, 2 subscription products, RevenueCat account ([STORE-SETUP.md](STORE-SETUP.md))
+- Decisions: keep the Live Activity? privacy policy URL? subscription start date? confirm 7-day trial
+- Old HERE account: delete the key, remove the card
 
-## Phase 2 — Subscription
+**Waiting on TomTom** (sales form, 2026-09-28)
+- Commercial use on the free/prepaid plan
+- **CarPlay** ("Automotive Usage" exclusion) — the one that matters
+- On-device caching duration
+- Prepaid hard cap confirmation
 
-- [ ] Accept Apple **Paid Apps Agreement**, tax + banking; apply to **App Store Small Business Program** (15%). Set up Google Play payments profile.
-- [ ] Create subscription products (monthly + annual, with free-trial intro offer) in App Store Connect and Play Console.
-- [x] Integrate **RevenueCat** (`react-native-purchases`) with a custom paywall + notice banner (`subscription/`, 2026-09-17). Off by config until products and keys exist.
-- [x] Paywall shows price, period, trial, auto-renew + cancel info, **Restore Purchases**, Terms of Use and Privacy Policy links (App Review 3.1.1 / 3.1.2). Needs the hosted privacy URL in config.
-- [ ] Worker gates `/limit` on an active entitlement (RevenueCat REST `GET /subscribers/{id}`, cached in KV a few minutes; RevenueCat webhooks to invalidate).
-- [ ] Update `privacy-policy.html` (location sent to TomTom via our Worker; purchase data via RevenueCat) and store privacy labels.
-- [ ] Pricing: set price above worst-case monthly API cost per heavy user after the 15% store fee.
-- [ ] **Existing free users** — decided: no free access. Soften it: an in-app notice in the release *before* the paywall ships, clear release notes, and the trial so current users can keep using it for a week before paying.
+## Plan from here
 
-## Phase 3 — CarPlay Live Activity
+### Step 1 — Prove the accuracy and the cost (needs a drive)
+Drive build 30; read Lookup stats. Expect far fewer TomTom calls and limits on highways.
+If a road type is still blank, that's the next fix.
 
-_Prototype built on `feat/carplay-live-activity` (2026-09-16) with `@bacons/apple-targets` on SDK 54 — awaiting first EAS build + in-car test._
+### Step 2 — Store setup (parallel, needs you)
+Apple agreements, products, RevenueCat. Nothing here depends on TomTom.
 
-- [ ] **Prototype first**: can the app update a Live Activity ~1 Hz in the background, and how often does CarPlay actually redraw it? Test in CarPlay Simulator + a real car. If it's heavily coalesced, show the **limit** (changes rarely) prominently and speed as best-effort.
-- [ ] Background location: `UIBackgroundModes: location`, `Location.startLocationUpdatesAsync` + `expo-task-manager` (already a dependency), Android foreground service if we want parity. Justify in App Review notes (2.5.4); watch battery (2.4.2); frame as compliance aid (1.4.4).
-- [ ] Build the Live Activity with `supplementalActivityFamilies([.small])` via official **`expo-widgets`** (SDK 56+). Fallback: SwiftUI via `@bacons/apple-targets` + a small ActivityKit native module.
-- [ ] Start activity when a drive starts (app in foreground), end on stop / after 8 h limit. Payload ≤ 4 KB.
-- [ ] App Group data must not use data-protection class A/B (widget/activity must work with phone locked).
-- [ ] Park `feat/carplay-grid-display` (`MapTemplate`, `carplay-maps` entitlement). Note: the **Driving Task** entitlement was granted 2026-08-25 — useful because a CarPlay widget/Live Activity can only open the app from CarPlay if the app is also a CarPlay app.
+### Step 3 — Decide the CarPlay question
+- TomTom says CarPlay is fine → ship everything.
+- TomTom says no → ship **phone-only** (no CarPlay tile), or keep CarPlay on OSM-only data.
+- No answer in ~2 weeks → treat as "no" and pick one of the above.
 
-## Phase 4 — Release
+### Step 4 — Notice release
+`subscription.mode = "notice"`: app still free, a banner announces the date, the trial can be
+started early. Release notes explain it. ~2 weeks before the switch.
 
-- [ ] Remove `withCarPlay` `carplay-maps` changes from the release branch (builds won't sign with it).
-- [ ] Store listing copy + screenshots for subscription and CarPlay.
-- [ ] TestFlight / internal track with real drives; watch Worker call counts and TomTom usage daily for the first weeks.
+### Step 5 — Paywall release
+`mode = "required"`, Worker switched to subscribers-only. Watch usage and cost daily for the
+first weeks.
 
-## Decisions (2026-09-17)
+### Step 6 — After launch
+Expo SDK upgrade, Android drive mode, trip history, speed smoothing, splitting `App.js` further.
 
-- **Existing free users do NOT keep free access** — everyone hits the paywall after the update.
-- **Price: $2.99/month and $24.99/year.**
-- **Trial: 7-day free trial** (Apple introductory offer / Google free trial) on both plans — recommended; confirm before creating the products.
+## Decisions (2026-09-16 → 09-28)
+
+- **Evolve the existing app** (same bundle id, same store listings); SDK upgrade deferred to after launch.
+- **Subscription only**; existing free users do **not** keep free access (softened by the notice release + trial).
+- **$2.99 / $24.99 / 7-day trial.**
+- **OSM first, TomTom fallback.** HERE **ruled out** (no card-free hard stop; even contacting them needs a card).
+- **CarPlay via Live Activity** — Apple refused the Navigation entitlement; Driving Task was granted.
+- **Google Play can't convert a free app to paid**, hence in-app subscription.
+- **No shared server cache of TomTom answers** (their terms forbid serving one result to many users).
 
 ## Open questions
 
-1. Android: Android Auto was stripped after a Play rejection — any Android equivalent of the Live Activity (ongoing notification) wanted?
-2. Is OSM + TomTom coverage good enough in the areas you drive? Test before committing to launch.
-
-## Research summary (2026-09-16)
-
-**Providers** — TomTom Reverse Geocode `returnSpeedLimit=true` (20k/mo free, 429 when exceeded; ~$0.50/1k paid, third-party figure). Google Roads speed limits need an Asset Tracking licence ($20/1k). Mapbox Map Matching `maxspeed` is beta and its terms forbid caching ($2/1k after 100k). Esri SnapToRoads $4/1k points, no free tier. HERE: `departureTime=any` avoids the Time Aware Routing bucket; reverse-geocode speed limits are premium/contact sales. Self-hosted Valhalla / on-device OSM extract: no per-call cost, same OSM coverage gaps.
-Docs: https://docs.tomtom.com/reverse-geocoding-api/documentation/reverse-geocode · https://docs.tomtom.com/pricing · https://developers.google.com/maps/documentation/roads/speed-limits · https://www.mapbox.com/legal/product-terms
-
-**Paid app** — Play: free apps "can't be changed to paid" (https://support.google.com/googleplay/android-developer/answer/6334373). RevenueCat free to $2.5K MTR then 1%. `react-native-iap` / `expo-iap` repos moved to hyodotdev/openiap (Aug 2026). Apple Small Business Program 15%; Play subscriptions 15%.
-
-**CarPlay** — "Your app does not need to be a CarPlay app to support widgets and Live Activities in CarPlay" (CarPlay Developer Guide, June 2026). Widgets: `.systemSmall`. Live Activities: `supplementalActivityFamilies([.small])`, updatable from the app while running in the background, can't fetch network/location themselves, 4 KB, 8 h. Navigation category requires turn-by-turn guidance. `expo-widgets` stable since SDK 56; `expo-live-activity` is deprecated.
-Docs: https://developer.apple.com/download/files/CarPlay-Developer-Guide.pdf · https://developer.apple.com/videos/play/wwdc2025/216/ · https://developer.apple.com/documentation/activitykit/displaying-live-data-with-live-activities
+1. Android: any equivalent of the CarPlay tile (an ongoing notification)?
+2. Is OSM + TomTom coverage good enough on the roads you actually drive?
+3. Does the price clear the data cost once the savings work is measured?
