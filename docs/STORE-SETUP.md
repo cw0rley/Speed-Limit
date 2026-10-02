@@ -6,6 +6,21 @@ do not keep free access).
 
 ---
 
+## Progress (2026-10-02)
+
+- [x] Free Apps Agreement accepted (this was blocking **all** TestFlight uploads — error:
+      "A required Apple agreement is missing or has expired")
+- [x] Apple Developer Program License Agreement accepted
+- [x] DSA trader question answered
+- [x] W-9 submitted — **Active**
+- [x] Bank account (USAA, USD) submitted — **Processing**, up to 24 h
+- [x] Paid Apps Agreement — **Processing** (goes Active when the bank clears)
+- [x] Small Business Program — applied
+- [x] Card added for the $99/year membership auto-renewal
+- [ ] Subscription products (do these once Paid Apps is **Active**)
+- [ ] RevenueCat project + keys
+- [ ] Hosted privacy policy URL, notice start date
+
 ## 1. App Store Connect (Apple)
 
 1. **Paid Apps Agreement** — appstoreconnect.apple.com → **Business** → accept the agreement, then
