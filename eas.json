@@ -28,6 +28,11 @@
         "serviceAccountKeyPath": "../Workout/prforgd/google-service-account.json",
         "track": "production"
       }
+    },
+    "testflight": {
+      "ios": {
+        "ascAppId": "6763160045"
+      }
     }
   }
 }
