@@ -71,9 +71,12 @@ feeds it fixes from `handleLocation`.
   4. **No road matched** (OSM covers the spot but has no road, or OSM is down) → TomTom per
      ~11 m cell, **only while moving**. While the first area is still downloading, nothing is
      asked.
-  - TomTom spacing: ≥ 30 s between calls (`TOMTOM_MIN_INTERVAL_MS`), 10 min back-off after a
-    Worker `429`/`503` (`TOMTOM_BACKOFF_MS`). Per-road lookups while stopped only if nothing is
-    shown yet.
+  - TomTom spacing: ≥ **8 s** between calls (`TOMTOM_MIN_INTERVAL_MS`), but moving onto a road
+    we haven't asked about only waits `NEW_ROAD_MIN_MS` (3 s) — 30 s starved the display in town
+    (real drive 2026-10: 12–21 calls/day against a 200/day cap, **20 % of moving time blank**).
+    A road TomTom had no answer for is re-asked after `WAY_MISS_TTL_MS` (20 min) instead of being
+    written off for the session. 10 min back-off after a Worker `429`/`503`
+    (`TOMTOM_BACKOFF_MS`). Per-road lookups while stopped only if nothing is shown yet.
   - Display: a new road must match on **2 consecutive fixes** before its limit replaces the
     current one; fixes worse than 50 m accuracy are ignored for matching; if nothing is confirmed
     for 60 s while moving, show `--`.
@@ -328,8 +331,9 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
 - **Provider choice by road class (2026-09-26).** TomTom **Reverse Geocode** returns the nearest
   *addressed* street: on the NJ Turnpike bridge it gave **25 mph** (a side street) unfiltered and
   **nothing** with `roadUse=LimitedAccess`. **Snap to Roads** returned the correct **55 mph** there.
-  So the Worker now uses **Snap to Roads for `motorway` / `trunk` / `*_link`** (`useSnapFor`) when
-  the app also sends `prev=` (the previous fix), and Reverse Geocode for everything else. Snap's
+  So the Worker uses **Snap to Roads for `motorway` / `trunk` / `*_link`** (`useSnapFor`) when
+  the app also sends `prev=` (the previous fix), Reverse Geocode for everything else, **and falls
+  back to Snap when Reverse Geocode returns no limit** (it only knows *addressed* streets). Snap's
   free allowance is much smaller (**2,500/month vs 20,000**), so it has its own ceiling
   `MAX_SNAP_DAILY_CAP = 80` (`SNAP_DAILY_CAP` var, currently 40) counted in D1 `snap_usage`;
   `/usage` reports `snapCalls` / `snapDailyCap`. `GET /snap` is a diagnostic route (test token,

@@ -23,7 +23,8 @@ Keeps the TomTom API key off the phone and hard-limits how often TomTom is calle
 7. Everything runs on Cloudflare's free tier (Workers + D1). On the Workers **Free** plan, exceeding a limit makes requests fail — it doesn't bill. Check your plan: Cloudflare dashboard → Workers & Pages → Plans.
 
 **Which TomTom product:** `motorway` / `trunk` / `*_link` → **Snap to Roads** (needs `prev=`),
-everything else → **Reverse Geocode**. Snap's free allowance is 2,500/month (vs 20,000), so it has
+everything else → **Reverse Geocode**, and if that comes back empty (it only knows *addressed*
+streets) the Worker falls back to Snap to Roads when `prev=` is present. Snap's free allowance is 2,500/month (vs 20,000), so it has
 its own daily ceiling (`MAX_SNAP_DAILY_CAP = 80`, `SNAP_DAILY_CAP` var).
 
 The app adds its own spacing (at most one TomTom call per 30 s per device, 10-minute back-off after a `429`/`503`) and only asks TomTom when OpenStreetMap has no answer.
