@@ -384,26 +384,9 @@ async function handleLimit(request, env, ctx, url) {
   // Motorways/ramps: snap the trace to the road network instead of reverse
   // geocoding (which returns the nearest addressed street, often wrong there).
   if (q.snap && q.prev) {
-    if (!(await reserveSnap(db, snapCap(env)).catch(() => false))) {
-      return json({ value: null, reason: 'snap cap reached' }, 429);
-    }
-    const snapUrl = new URL('https://api.tomtom.com/snapToRoads/1');
-    snapUrl.searchParams.set('key', env.TOMTOM_API_KEY);
-    snapUrl.searchParams.set('points', `${q.prev};${q.lon},${q.lat}`);
-    snapUrl.searchParams.set('vehicleType', 'PassengerCar');
-    snapUrl.searchParams.set('measurementSystem', 'imperial');
-    snapUrl.searchParams.set('fields', '{route{properties{id,speedLimits{value,unit,type}}}}');
-    try {
-      const snapRes = await fetch(snapUrl.toString(), { headers: { Accept: 'application/json' } });
-      if (snapRes.status === 401 || snapRes.status === 403 || snapRes.status === 429) {
-        return json({ value: null, reason: `provider ${snapRes.status}` }, 429);
-      }
-      if (!snapRes.ok) return json({ value: null, reason: `upstream ${snapRes.status}` }, 502);
-      const parsedSnap = limitFromSnap(await snapRes.json());
-      return json(parsedSnap ? { ...parsedSnap, source: 'tomtom' } : { value: null });
-    } catch (_) {
-      return json({ value: null, reason: 'upstream unreachable' }, 502);
-    }
+    const snapped = await snapLimit(q, env, db);
+    if (snapped.response) return snapped.response;
+    return json(snapped.limit ? { ...snapped.limit, source: 'tomtom' } : { value: null });
   }
 
   const upstream = new URL(
@@ -442,13 +425,46 @@ async function handleLimit(request, env, ctx, url) {
   }
 
   const address = data && data.addresses && data.addresses[0] && data.addresses[0].address;
-  const parsed = parseTomTomSpeedLimit(address && address.speedLimit);
+  let parsed = parseTomTomSpeedLimit(address && address.speedLimit);
+
+  // Reverse geocoding only knows limits for *addressed* streets, so it comes
+  // back empty on plenty of ordinary roads. Snap to Roads usually knows them;
+  // it has its own (smaller) daily cap, and a refusal there is not an error.
+  if (!parsed && q.prev) {
+    const snapped = await snapLimit(q, env, db);
+    if (snapped.limit) parsed = snapped.limit;
+  }
+
   const body = JSON.stringify(
     parsed ? { ...parsed, source: 'tomtom' } : { value: null }
   );
 
 
   return new Response(body, { headers: JSON_HEADERS });
+}
+
+// One Snap to Roads lookup for the trace prev -> current position.
+// Returns { limit } on success, or { response } to send straight back.
+async function snapLimit(q, env, db) {
+  if (!(await reserveSnap(db, snapCap(env)).catch(() => false))) {
+    return { response: json({ value: null, reason: 'snap cap reached' }, 429) };
+  }
+  const snapUrl = new URL('https://api.tomtom.com/snapToRoads/1');
+  snapUrl.searchParams.set('key', env.TOMTOM_API_KEY);
+  snapUrl.searchParams.set('points', `${q.prev};${q.lon},${q.lat}`);
+  snapUrl.searchParams.set('vehicleType', 'PassengerCar');
+  snapUrl.searchParams.set('measurementSystem', 'imperial');
+  snapUrl.searchParams.set('fields', '{route{properties{id,speedLimits{value,unit,type}}}}');
+  try {
+    const res = await fetch(snapUrl.toString(), { headers: { Accept: 'application/json' } });
+    if (res.status === 401 || res.status === 403 || res.status === 429) {
+      return { response: json({ value: null, reason: `provider ${res.status}` }, 429) };
+    }
+    if (!res.ok) return { response: json({ value: null, reason: `upstream ${res.status}` }, 502) };
+    return { limit: limitFromSnap(await res.json()) };
+  } catch (_) {
+    return { response: json({ value: null, reason: 'upstream unreachable' }, 502) };
+  }
 }
 
 // Diagnostic: TomTom Snap to Roads for a short GPS trace.

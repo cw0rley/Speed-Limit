@@ -214,14 +214,43 @@ test('engine: OSM down -> per-cell TomTom, only while moving, spaced', async () 
   await h.drive(0, 0, 90, 0); // parked: area fails
   await h.drive(0, 0, 90, 0);
   assert.equal(h.calls.tomtom, 0, 'no per-cell calls while parked');
-  for (let i = 0; i < 20; i++) await h.drive(0, i * 15, 90, 15); // 20 s of driving
-  assert.equal(h.calls.tomtom, 1, 'at most one call per 30 s');
+  // 20 s of driving: per-cell lookups are spaced by TOMTOM_MIN_INTERVAL_MS
+  // (no "new road" exemption here — OSM is down, so no road is matched).
+  for (let i = 0; i < 20; i++) await h.drive(0, i * 15, 90, 15);
+  const expected = 1 + Math.floor(20000 / TOMTOM_MIN_INTERVAL_MS);
+  assert.equal(h.calls.tomtom, expected, `one call per ${TOMTOM_MIN_INTERVAL_MS} ms`);
   h.tick(TOMTOM_MIN_INTERVAL_MS);
   await h.drive(0, 400, 90, 15);
-  assert.equal(h.calls.tomtom, 2);
+  assert.equal(h.calls.tomtom, expected + 1);
   const s = h.engine.getStats();
   assert.ok(s.areaFailures >= 1);
-  assert.equal(s.tomtomCalls, 2);
+  assert.equal(s.tomtomCalls, expected + 1);
+});
+
+test('engine: a new road is asked about promptly, not after the full spacing', async () => {
+  // Side Rd has no OSM maxspeed; TomTom answers 25.
+  const h = harness();
+  await h.drive(0, -200, 90); // Main St (35 mph from OSM), area loads
+  await h.drive(0, -150, 90);
+  assert.equal(h.calls.tomtom, 0, 'tagged road costs nothing');
+  // Turn onto Side Rd a few seconds later: the lookup should not wait 30 s.
+  await h.drive(60, 0, 0);
+  await h.drive(90, 0, 0);
+  await h.drive(120, 0, 0);
+  assert.equal(h.calls.tomtom, 1, 'asked within seconds of the turn');
+  assert.equal(h.shown.at(-1), '25 mph tomtom');
+});
+
+test('engine: a road TomTom had no answer for is retried later', async () => {
+  const h = harness({ tomtom: () => ({ status: 'miss' }) });
+  await h.drive(0, -200, 90);
+  for (let n = 60; n <= 180; n += 30) await h.drive(n, 0, 0); // up the untagged road
+  assert.equal(h.calls.tomtom, 1, 'one call, then remembered as unknown');
+  assert.equal(h.engine.getCurrent() ?? null, null, 'shows --');
+  h.tick(21 * 60 * 1000); // past WAY_MISS_TTL_MS
+  await h.drive(210, 0, 0);
+  await h.drive(240, 0, 0);
+  assert.equal(h.calls.tomtom, 2, 'asked again on a later pass');
 });
 
 test('engine: stats split moving time by source', async () => {

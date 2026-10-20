@@ -28,7 +28,15 @@ import {
 } from './osmArea.js';
 import { fetchTomTomLimit as defaultFetchTomTom } from './tomtom.js';
 
-export const TOMTOM_MIN_INTERVAL_MS = 30 * 1000;
+// Spacing between paid lookups. 30 s starved the display: in town a road
+// changes every 20-40 s, so most roads never got asked and showed "--"
+// (real drive 2026-10: only 12-21 calls/day against a 200/day cap, 20% of
+// moving time blank). A new road may jump the queue after NEW_ROAD_MIN_MS.
+export const TOMTOM_MIN_INTERVAL_MS = 8 * 1000;
+const NEW_ROAD_MIN_MS = 3 * 1000;
+// A road TomTom had no answer for is re-asked after this long, rather than
+// being written off for the whole session.
+const WAY_MISS_TTL_MS = 20 * 60 * 1000;
 export const TOMTOM_BACKOFF_MS = 10 * 60 * 1000;
 const TOMTOM_CELL_MISS_TTL_MS = 10 * 60 * 1000;
 const AREA_RETRY_BASE_MS = 15 * 1000;
@@ -225,8 +233,12 @@ export function createLimitEngine({
   // stopped if nothing is shown yet (one call per road, cached); per-cell
   // lookups only while moving (GPS drift in a parking lot would otherwise
   // wander through new cells).
-  function tomtomAllowed(fix, { movingOnly = false } = {}) {
-    if (tomtomBusy || now() < tomtomNextAt) return false;
+  function tomtomAllowed(fix, { movingOnly = false, newRoad = false } = {}) {
+    if (tomtomBusy) return false;
+    // Moving onto a road we haven't asked about is the case that matters for
+    // the display, so it waits only the short floor.
+    const until = newRoad ? tomtomNextAt - (TOMTOM_MIN_INTERVAL_MS - NEW_ROAD_MIN_MS) : tomtomNextAt;
+    if (now() < until) return false;
     if (fix.speed > MOVING_MPS) return true;
     return !movingOnly && current.limit == null;
   }
@@ -324,11 +336,16 @@ export function createLimitEngine({
         // Road known, OSM has no limit for it: TomTom once per road+direction.
         const dir = m.forward == null ? 'x' : m.forward ? 'f' : 'b';
         const key = `${m.wayId}:${dir}`;
-        if (wayTomTom.has(key)) {
-          const limit = wayTomTom.get(key);
-          propose(`t:${key}`, limit && { ...limit, road: m.name });
-        } else if (tomtomAllowed(f)) {
-          askTomTom(f, (limit) => boundedSet(wayTomTom, key, limit), m.highway);
+        const known = wayTomTom.get(key);
+        if (known && (known.limit || now() < known.until)) {
+          propose(`t:${key}`, known.limit && { ...known.limit, road: m.name });
+        } else if (tomtomAllowed(f, { newRoad: true })) {
+          askTomTom(
+            f,
+            (limit) =>
+              boundedSet(wayTomTom, key, { limit, until: now() + WAY_MISS_TTL_MS }),
+            m.highway
+          );
         } else if (!tomtomBusy) {
           // TomTom unavailable (spacing / capped / off): don't carry the
           // previous road's limit onto this one.
