@@ -83,7 +83,8 @@ feeds it fixes from `handleLocation`.
   - **Stats** (`getStats` / `resetStats` / `restoreStats`): moving seconds split by source
     (OSM / TomTom / none), area downloads + failures, TomTom calls / hits / misses / back-offs /
     errors. `App.js` persists them to AsyncStorage (`@speed_limit_lookup_stats`, every 30 s) and
-    shows them in **Settings → Lookup stats** (with Reset).
+    shows them in **Settings → Lookup stats** — one collapsed row (`N min · N% blank`) that
+    expands to the full table, with **Reset stats** at the top of it.
 - **`areaStore.js`** — `createAreaStore(storage)`: keeps downloaded **OSM** areas on the device
   (AsyncStorage) bucketed by a ~1.1 km cell, max 15 records, 400 KB each, 14-day age limit. A
   repeated route needs **no download** (`areaFromStore` in stats). **TomTom answers are never

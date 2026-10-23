@@ -308,8 +308,11 @@ function carplayItems(limitText, driveOn) {
 }
 
 // Settings -> "Lookup stats": how often a limit was found while moving, and
-// what it cost. Refreshes every 2 s while the settings sheet is open.
+// what it cost. Refreshes every 2 s while the settings sheet is open. Collapsed
+// by default — the thresholds are what people come here for, and the numbers
+// below used to push Reset off the bottom of the sheet.
 function LookupStats() {
+  const [open, setOpen] = useState(false);
   const [stats, setStats] = useState(() => limitEngine.getStats());
   useEffect(() => {
     const id = setInterval(() => setStats(limitEngine.getStats()), 2000);
@@ -334,36 +337,54 @@ function LookupStats() {
     ['  off or capped / errors', `${stats.tomtomBackoffs} / ${stats.tomtomErrors}`],
   ];
 
+  // Collapsed line: the two numbers worth a glance — how long the stats cover
+  // and how much of that time showed nothing.
+  const summary = moving > 0
+    ? `${minutes} min · ${pct(stats.unknownSeconds)} blank`
+    : 'no driving yet';
+
   return (
     <View style={styles.statsBox}>
-      <Text style={styles.statsTitle}>Lookup stats since {since}</Text>
-      {rows.map(([label, value]) => (
-        <View key={label} style={styles.statsRow}>
-          <Text style={styles.statsLabel}>{label}</Text>
-          <Text style={styles.statsValue}>{value}</Text>
-        </View>
-      ))}
-      <TouchableOpacity onPress={() => { resetLookupStats(); setStats(limitEngine.getStats()); }}>
-        <Text style={styles.statsReset}>Reset stats</Text>
+      <TouchableOpacity style={styles.statsHeader} onPress={() => setOpen(!open)}>
+        <Text style={styles.statsTitle}>Lookup stats</Text>
+        <Text style={styles.statsDisclosure}>{open ? 'Hide' : `${summary}  ›`}</Text>
       </TouchableOpacity>
 
-      <Text style={[styles.statsTitle, { marginTop: 14 }]}>Recent limit changes</Text>
-      {recentLimitChanges.length === 0 ? (
-        <Text style={styles.statsLabel}>None since the app started.</Text>
-      ) : (
-        recentLimitChanges.map((c) => (
-          <View key={c.at} style={styles.statsRow}>
-            <Text style={styles.statsLabel} numberOfLines={1}>
-              {new Date(c.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
-              {c.road ? `  ${c.road}` : ''}
-            </Text>
-            <Text style={styles.statsValue}>
-              {c.text}
-              {c.source ? ` · ${c.source}` : ''}
-            </Text>
+      {open ? (
+        <>
+          <View style={styles.statsRow}>
+            <Text style={styles.statsLabel}>Since {since}</Text>
+            <TouchableOpacity onPress={() => { resetLookupStats(); setStats(limitEngine.getStats()); }}>
+              <Text style={styles.statsResetInline}>Reset stats</Text>
+            </TouchableOpacity>
           </View>
-        ))
-      )}
+
+          {rows.map(([label, value]) => (
+            <View key={label} style={styles.statsRow}>
+              <Text style={styles.statsLabel}>{label}</Text>
+              <Text style={styles.statsValue}>{value}</Text>
+            </View>
+          ))}
+
+          <Text style={[styles.statsTitle, { marginTop: 14 }]}>Recent limit changes</Text>
+          {recentLimitChanges.length === 0 ? (
+            <Text style={styles.statsLabel}>None since the app started.</Text>
+          ) : (
+            recentLimitChanges.map((c) => (
+              <View key={c.at} style={styles.statsRow}>
+                <Text style={styles.statsLabel} numberOfLines={1}>
+                  {new Date(c.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
+                  {c.road ? `  ${c.road}` : ''}
+                </Text>
+                <Text style={styles.statsValue}>
+                  {c.text}
+                  {c.source ? ` · ${c.source}` : ''}
+                </Text>
+              </View>
+            ))
+          )}
+        </>
+      ) : null}
     </View>
   );
 }
@@ -1087,6 +1108,17 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     textTransform: 'uppercase',
   },
+  statsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  statsDisclosure: {
+    color: '#60a5fa',
+    fontSize: 13,
+    marginBottom: 8,
+  },
   statsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1110,6 +1142,11 @@ const styles = StyleSheet.create({
     color: '#60a5fa',
     fontSize: 13,
     marginTop: 10,
+    textAlign: 'right',
+  },
+  statsResetInline: {
+    color: '#60a5fa',
+    fontSize: 13,
     textAlign: 'right',
   },
   modalBtnText: {
