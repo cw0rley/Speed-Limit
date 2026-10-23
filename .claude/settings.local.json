@@ -80,7 +80,8 @@
       "Bash(eas --help)",
       "Bash(node -e \"const fs=require\\('fs'\\);const os=require\\('os'\\);const p=os.homedir\\(\\)+'/.expo/state.json';try{const s=JSON.parse\\(fs.readFileSync\\(p\\)\\);console.log\\('sessionSecret present?', !!\\(s.auth&&s.auth.sessionSecret\\)\\)}catch\\(e\\){console.log\\('no state.json:',e.message\\)}\")",
       "Bash(node -e ' *)",
-      "Bash(node -e \"const a=require\\('./app.json'\\); console.log\\('expo.version:', a.expo.version\\); console.log\\('ios.buildNumber:', a.expo.ios&&a.expo.ios.buildNumber, '\\(remote-managed via eas.json appVersionSource\\)'\\)\")"
+      "Bash(node -e \"const a=require\\('./app.json'\\); console.log\\('expo.version:', a.expo.version\\); console.log\\('ios.buildNumber:', a.expo.ios&&a.expo.ios.buildNumber, '\\(remote-managed via eas.json appVersionSource\\)'\\)\")",
+      "Bash(npx wrangler *)"
     ]
   }
 }
