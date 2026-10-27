@@ -278,8 +278,16 @@ Dashboard on iOS 26+. Work is on branch **`feat/carplay-live-activity`** — EAS
 - Android permissions: `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`.
 - Plugins (order matters): `expo-location` (When-In-Use text, `isIosBackgroundLocationEnabled:
   true`, Always text), `./plugins/withCarPlay`, `@bacons/apple-targets`,
-  `./plugins/withoutBackgroundFetch` (strips the `fetch` background mode that
-  expo-task-manager's plugin always adds — the app only uses background **location**; runs last).
+  `./plugins/withoutAndroidAuto` (see below), `./plugins/withoutBackgroundFetch` (strips the
+  `fetch` background mode that expo-task-manager's plugin always adds — the app only uses
+  background **location**; runs last).
+- **The app is NOT an Android Auto app** — `./plugins/withoutAndroidAuto` makes sure of it.
+  `@iternio/react-native-auto-play` is iOS-only here (CarPlay), but its Android manifest declares
+  a `androidx.car.app.CarAppService` plus the `com.google.android.gms.car.application` meta-data,
+  which is what advertises Auto support. The plugin re-declares those (and the `androidx.car.app.*`
+  / `com.google.android.gms.permission.CAR_*` permissions) with `tools:node="remove"` so the
+  manifest merger drops them. **Do not remove this plugin** without reading the Play enforcement
+  note under "Known gaps".
 - EAS project id: `c659ab4d-9909-44da-b96b-00aad54ceb97`.
 - **Background location is iOS-only** — `UIBackgroundModes` is now exactly `['location']`, used
   only while drive mode is on. Android stays foreground-only.
@@ -352,6 +360,21 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
   approach on `feat/carplay-grid-display` is dead. Custom graphics now go through a Live Activity /
   widget (SwiftUI, no entitlement). The
   **Driving Task** entitlement was granted 2026-08-25.
+- **Play pulled the Android release on 2026-08-20** — policy issue "Auto App Quality Guidelines:
+  App crashes" ("the content of your application is not able to load"), so the listing fell back
+  to the previous version. Cause: `@iternio/react-native-auto-play`'s Android manifest declared
+  the app as an Android Auto navigation app, but nothing on the JS side ever drives it on Android
+  (`App.js` requires the library behind `Platform.OS === 'ios'`). On a head unit its
+  `AndroidAutoService` starts, shows an empty placeholder `MessageTemplate` and waits for a screen
+  that never arrives; Google's automated Auto test read that as a crash. Fixed by
+  `plugins/withoutAndroidAuto.js` (Google's own suggested remedy: remove the Android Auto manifest
+  entry). **Still to do by the owner:** build a new Android bundle, upload it to *every* track
+  (production + any open/closed/internal test tracks — the policy page says the non-compliant
+  bundle has to be out of all of them), and roll it out; the Auto section should disappear from
+  the release. Verify on the build with
+  `grep -c car.application android/app/build/intermediates/merged_manifests/*/AndroidManifest.xml`
+  → 0. The library's Kotlin/Gradle code still compiles into the Android build (size only, no
+  policy effect); linking it out of Android entirely is the fuller fix if it ever matters.
 - **Drive mode is iOS-only and unverified** (`feat/carplay-live-activity`). Android has no
   background mode (would need a foreground service + `ACCESS_BACKGROUND_LOCATION`).
 - **No trip history / max-speed recorder.** Would be a ring buffer of `(t, speed, lat, lon)`.
@@ -379,6 +402,7 @@ speed-limit/
   package.json           # deps (Expo SDK 54 / RN 0.81 / React 19)
   babel.config.js
   plugins/withCarPlay.js # config plugin: carplay-driving-task entitlement, scenes, AppDelegate hook
+  plugins/withoutAndroidAuto.js # strips the Android Auto manifest entry (Play policy, Aug 2026)
   plugins/withoutBackgroundFetch.js # drops the unused `fetch` background mode
   targets/live-activity/ # SwiftUI Live Activity extension (CarPlay Dashboard / Lock Screen)
   modules/speed-limit-activity/ # local Expo module: JS -> ActivityKit bridge

@@ -50,6 +50,7 @@
       ],
       "./plugins/withCarPlay",
       "@bacons/apple-targets",
+      "./plugins/withoutAndroidAuto",
       "./plugins/withoutBackgroundFetch"
     ],
     "extra": {
