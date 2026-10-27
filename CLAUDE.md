@@ -288,6 +288,10 @@ Dashboard on iOS 26+. Work is on branch **`feat/carplay-live-activity`** — EAS
   / `com.google.android.gms.permission.CAR_*` permissions) with `tools:node="remove"` so the
   manifest merger drops them. **Do not remove this plugin** without reading the Play enforcement
   note under "Known gaps".
+- **`RECORD_AUDIO` is stripped on Android** by that same plugin. The auto-play library requests it
+  for Android Auto voice and is the only thing in the dependency tree that wants a microphone —
+  the app has no audio code and no audio package. Left in, the Play listing tells users Speed
+  Limit can record audio. (iOS keeps `NSMicrophoneUsageDescription`; CarPlay voice uses it.)
 - EAS project id: `c659ab4d-9909-44da-b96b-00aad54ceb97`.
 - **Background location is iOS-only** — `UIBackgroundModes` is now exactly `['location']`, used
   only while drive mode is on. Android stays foreground-only.

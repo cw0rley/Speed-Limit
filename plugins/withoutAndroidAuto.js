@@ -23,6 +23,11 @@ const { withAndroidManifest, AndroidConfig } = require('@expo/config-plugins');
 
 // Auto-only permissions the library asks for. The app's own permissions are in
 // app.json (android.permissions); nothing here overlaps with them.
+//
+// RECORD_AUDIO is on this list for the same reason: the library requests it for
+// Android Auto voice input, and it is the only thing in the whole dependency
+// tree that asks for a microphone — the app has no audio code and no audio
+// package. Left in, the Play listing tells users Speed Limit can record audio.
 const AUTO_PERMISSIONS = [
   'androidx.car.app.NAVIGATION_TEMPLATES',
   'androidx.car.app.MAP_TEMPLATES',
@@ -30,6 +35,7 @@ const AUTO_PERMISSIONS = [
   'com.google.android.gms.permission.CAR_FUEL',
   'com.google.android.gms.permission.CAR_MILEAGE',
   'com.google.android.gms.permission.CAR_SPEED',
+  'android.permission.RECORD_AUDIO',
 ];
 
 // `com.google.android.gms.car.application` is the declaration Android Auto and
