@@ -122,11 +122,25 @@ feeds it fixes from `handleLocation`.
 - Imports inside `lookup/` use explicit `.js` extensions (needed by Node's test runner; Metro is
   fine with them).
 
-**OSM coverage is poor in the US.** A central-NJ sample box (2026-09-17) had maxspeed on only
-17 of 158 drivable ways (~11%) — none on ramps or primary/secondary roads. The public Overpass
-servers also fail often (504s / timeouts observed repeatedly; `kumi.systems` never answered).
-OSM alone cannot be the product; the commercial fallback (or a self-hosted OSM copy plus another
-data source) is required.
+**OSM coverage varies enormously by region — measure, do not assume.** Two samples:
+
+- **Clayton, NC (2026-10-28, `tools/osm-coverage.mjs`, 8 km box, 1,108 ways, 340.8 km):**
+  **73.3 % of road LENGTH carries a maxspeed tag directly**, 74.9 % with inheritance. The
+  remaining 25.2 % (85.7 km) is **almost all `residential`** (23.4 %), plus a little
+  `primary_link` (1.0 %). **No `maxspeed:type` / `zone:maxspeed` / `source:maxspeed` tags exist
+  in this area at all**, so levers B and C contribute exactly 0 % here (they work where mappers
+  use those tags — common in DE/GB, absent here).
+- **Central NJ (2026-09-17):** maxspeed on 17 of 158 drivable ways (~11 %) — but that was a
+  **way count**, not length-weighted, so it is not comparable to the figure above and almost
+  certainly overstated the problem. Treat it as anecdote.
+
+So the old blanket claim "OSM alone cannot be the product" is **not supported in NC**. It may
+still hold elsewhere. Caveat on the 73 %: length is a rough proxy for driving *time* and
+under-weights residential streets (lower speed = more time per km), so the blank share felt on a
+drive will run higher than 25 % unless the route is mostly arterial.
+
+The public Overpass servers fail often (502s/504s; `tools/osm-coverage.mjs` retries both
+endpoints for this reason).
 
 **Background-safe by design (fix for "CarPlay limit stuck on 55", 2026-09-18):** with the phone
 locked, JS timers (React effects with `setTimeout`, fetch timeouts) may not fire. So nothing on
@@ -442,8 +456,13 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
 - **Raising OSM-only coverage (opened 2026-10-28).** A production build never calls TomTom
   (`lookup/tomtom.js`: no test token and no app user id → `backoff`), so **a free store release
   is OSM-only**. On the 2026-10-26 drive that would have been 44 % of moving time (OSM 42 % +
-  inherited 2 %). Three levers, none needing a paid call or a licensing answer. Measure before
-  building: `node --no-warnings tools/osm-coverage.mjs <lat> <lon> [radius]` reports each one
+  inherited 2 %). Three levers, none needing a paid call or a licensing answer.
+  **MEASURED 2026-10-28 on Clayton NC (see "OSM coverage varies enormously" above): A = +1.6 %,
+  B = 0 %, C = 0 %, because 73.3 % was already tagged directly and the area carries no zone tags
+  at all.** The gap that remains is `residential` (23.4 % of length, 79.7 km) — nothing in A/B/C
+  reaches it, and only a per-class assumption or a paid lookup would. The much bigger finding is
+  that the drive showed OSM at 42 % while the data says 73.3 % was available: that 31-point gap
+  was the three engine bugs, not the data. Measure elsewhere before generalising: `node --no-warnings tools/osm-coverage.mjs <lat> <lon> [radius]` reports each one
   **length-weighted** (what you actually drive) for a real area.
   - **A — inherit from the nearest tagged piece, not by unanimity. DONE 2026-10-28.**
     `inferRoadLimits` used to collapse each road to one limit and drop the road entirely if any
