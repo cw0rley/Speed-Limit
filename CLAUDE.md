@@ -61,10 +61,12 @@ feeds it fixes from `handleLocation`.
      (`matchRoad`: distance + heading agreement + one-way penalty).
   2. **Matched road with OSM maxspeed** → shown (`source: 'osm'`).
   2b. **Matched road without maxspeed, but another piece of the SAME road has one** → inherited
-     (`inferRoadLimits` / `roadKey` in `osmArea.js`: key = highway class + `ref` or `name`, only
-     when every tagged piece agrees). Shown as `source: 'osm'` with `inferred: true`; counted in
-     `inferredSeconds`. **Costs no paid lookup** — OSM splits roads into many ways and often tags
-     only some of them.
+     from the **nearest** tagged piece within `INHERIT_MAX_M` (800 m) — `inferRoadLimits` /
+     `roadKey` / `inheritedLimit` in `osmArea.js`; key = highway class + `ref` or `name`. Shown
+     as `source: 'osm'` with `inferred: true`; counted in `inferredSeconds`. **Costs no paid
+     lookup** — OSM splits roads into many ways and often tags only some of them. *Nearest*, not
+     unanimous: see the 2026-10-28 note under "Known gaps" for why requiring every tagged piece
+     to agree made this rule contribute almost nothing.
   3. **Matched road without maxspeed** → TomTom **once per road + direction** for the session
      (`wayTomTom` map). While TomTom is unavailable (spacing / capped / off) the road shows
      `--` — the previous road's limit is **never** carried over.
@@ -431,13 +433,18 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
   inherited 2 %). Three levers, none needing a paid call or a licensing answer. Measure before
   building: `node --no-warnings tools/osm-coverage.mjs <lat> <lon> [radius]` reports each one
   **length-weighted** (what you actually drive) for a real area.
-  - **A — inherit from the nearest tagged piece, not by unanimity.** `inferRoadLimits` drops a
-    road's key entirely if any two tagged pieces disagree. A road long enough to legitimately
-    step from 45 to 55 therefore teaches the app **nothing along its whole length** — and those
-    are the roads you spend the most time on. Inheriting from the nearest tagged piece of the
-    same `roadKey` (with a tight distance cap, and ideally shared-node connectivity rather than
-    raw distance — note the Overpass `convert` currently drops node ids) fixes the case the
-    current rule was built for. Biggest expected win, no new data.
+  - **A — inherit from the nearest tagged piece, not by unanimity. DONE 2026-10-28.**
+    `inferRoadLimits` used to collapse each road to one limit and drop the road entirely if any
+    two tagged pieces disagreed. A road long enough to legitimately step from 45 to 55 therefore
+    taught the app **nothing along its whole length** — and those are the roads most driving time
+    goes on, which is why `inferredSeconds` was only 2 %. It now keeps the tagged pieces with
+    their geometry and `inheritedLimit(area, way, p)` takes the nearest one within
+    `INHERIT_MAX_M` (800 m — the accuracy/coverage dial), so a stepping limit is followed instead
+    of discarded. Regression test verified against the old rule. **Trade-off:** where inheritance
+    now answers, no TomTom call is made, so a wrong guess shows instead of a paid lookup; in a
+    free OSM-only build that is strictly better than blank, and it also cuts quota use.
+    *Possible refinement:* prefer shared-node connectivity over raw distance — the Overpass
+    `convert` currently drops node ids, so that needs a query change first.
   - **B — statutory-default tags.** `maxspeed:type` / `source:maxspeed` / `zone:maxspeed` say
     "the limit here is the statutory default", which is the real legal limit even unposted. The
     `convert` in `buildAreaQuery` **does not download them**, so step one is adding them to the

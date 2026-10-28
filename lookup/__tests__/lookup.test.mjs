@@ -412,7 +412,7 @@ test('engine: a hung map download is abandoned and retried (no timers needed)', 
 // Cost savings: inherit limits from the same road; reuse OSM data across drives
 // ---------------------------------------------------------------------------
 import { createAreaStore } from '../areaStore.js';
-import { inferRoadLimits, roadKey } from '../osmArea.js';
+import { inferRoadLimits, roadKey, inheritedLimit, INHERIT_MAX_M } from '../osmArea.js';
 
 function splitRoadJson() {
   // "Main St" in three pieces west->east: the middle one has no maxspeed.
@@ -434,13 +434,42 @@ function splitRoadJson() {
   };
 }
 
-test('roadKey / inferRoadLimits: agreeing pieces only, class-scoped', () => {
+test('roadKey / inferRoadLimits: tagged pieces indexed per road, class-scoped', () => {
   assert.equal(roadKey({ highway: 'secondary', name: 'Main St' }), 'secondary|main st');
   assert.equal(roadKey({ highway: 'secondary_link', ref: 'NJ 18', name: 'x' }), 'secondary|nj 18');
   assert.equal(roadKey({ highway: 'residential' }), null);
   const inferred = inferRoadLimits(parseArea(splitRoadJson(), syntheticBox).ways);
-  assert.deepEqual(inferred.get('secondary|main st'), { value: 40, unit: 'mph' });
-  assert.equal(inferred.has('secondary|other rd'), false, 'conflicting pieces are not inherited');
+  assert.deepEqual(inferred.get('secondary|main st').map((p) => p.limit.value), [40, 40]);
+  // Pieces that disagree are kept, not discarded: the nearest one wins at
+  // match time, which is how a road whose limit steps gets followed.
+  assert.deepEqual(inferred.get('secondary|other rd').map((p) => p.limit.value), [30, 50]);
+});
+
+// "Other Rd" is tagged 30 mph west of centre and 50 mph east of it, with a
+// third, untagged piece running the whole width 200 m to the north. The old
+// rule called that a conflict and inherited nothing anywhere along the road —
+// the common case on any road long enough to change limit, which is where most
+// driving time goes.
+test('a road whose limit steps inherits the nearest value, not nothing', () => {
+  const area = parseArea(splitRoadJson(), syntheticBox);
+  const west = at(400, -400);
+  const east = at(400, 400);
+  const mWest = matchRoad(area, west.lat, west.lon, 90, 20, 5);
+  const mEast = matchRoad(area, east.lat, east.lon, 90, 20, 5);
+
+  assert.equal(mWest.inferred, true, 'west end inherits');
+  assert.equal(mWest.limit.value, 30, 'from the 30 mph piece beside it');
+  assert.equal(mEast.inferred, true, 'east end inherits');
+  assert.equal(mEast.limit.value, 50, 'from the 50 mph piece beside it');
+});
+
+test('inheritance does not reach across a distant road', () => {
+  const area = parseArea(splitRoadJson(), syntheticBox);
+  // Far enough from both tagged pieces of Other Rd to be a different stretch.
+  const ways = area.ways.filter((w) => w.tags.name === 'Other Rd');
+  const untagged = ways.find((w) => !w.tags.maxspeed);
+  const far = { x: 0, y: INHERIT_MAX_M + 500 };
+  assert.equal(inheritedLimit(area, untagged, far), null, 'beyond INHERIT_MAX_M');
 });
 
 test('engine: untagged piece of a known road costs no TomTom call', async () => {

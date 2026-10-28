@@ -16,6 +16,10 @@ const AREA_HALF_SIZE_M = 800;
 const AREA_LOOKAHEAD_S = 20; // shift the box ahead by speed × this…
 const AREA_MAX_LOOKAHEAD_M = 400; // …capped here
 export const REFRESH_MARGIN_M = 250; // refetch when this close to the box edge
+// How far an untagged piece may reach along its own road for a tagged one.
+// Wide enough to cover the gaps OSM leaves on a rural road, tight enough that a
+// limit does not jump a town boundary. This is the accuracy/coverage dial.
+export const INHERIT_MAX_M = 800;
 const FETCH_TIMEOUT_MS = 15000; // area queries are heavier than point queries
 
 const DRIVABLE =
@@ -91,26 +95,67 @@ export function parseArea(json, box) {
 }
 
 // OSM splits a road into many ways, and often only some of them carry a
-// maxspeed. Build "road identity -> limit" from the tagged ways so the
-// untagged pieces of the SAME road can reuse it instead of costing a paid
-// lookup. Only used when every tagged piece of that road agrees.
+// maxspeed. Index the tagged pieces by road identity so an untagged piece of
+// the SAME road can take the limit of the nearest one instead of costing a
+// paid lookup.
+//
+// This used to collapse each road to a single limit and drop the road entirely
+// if any two tagged pieces disagreed. That defeated itself on exactly the roads
+// it was written for: a road long enough to be split into many pieces is
+// usually long enough for its limit to legitimately step (55 out of town, 45
+// through it), so the disagreement rule threw away the whole road — and those
+// long roads are where most driving time goes. Keeping the pieces with their
+// geometry lets the step be followed instead of discarded.
 export function inferRoadLimits(ways) {
-  const seen = new Map(); // key -> { limit, conflict }
+  const byKey = new Map(); // key -> [{ limit, way }]
   for (const way of ways) {
     const key = roadKey(way.tags);
     if (!key) continue;
     const limit = wayLimit(way.tags, null);
     if (!limit) continue;
-    const prev = seen.get(key);
-    if (!prev) {
-      seen.set(key, { limit, conflict: false });
-    } else if (prev.limit.value !== limit.value || prev.limit.unit !== limit.unit) {
-      prev.conflict = true;
+    let pieces = byKey.get(key);
+    if (!pieces) byKey.set(key, (pieces = []));
+    pieces.push({ limit, way });
+  }
+  return byKey;
+}
+
+// Smallest distance from a projected point to a way's geometry, or Infinity if
+// the way's bounding box is already further than `limitM`.
+function distanceToWay(way, p, limitM) {
+  const dx = Math.max(way.minX - p.x, 0, p.x - way.maxX);
+  const dy = Math.max(way.minY - p.y, 0, p.y - way.maxY);
+  if (Math.hypot(dx, dy) > limitM) return Infinity;
+  let min = Infinity;
+  for (let i = 0; i < way.pts.length - 1; i++) {
+    const { dist } = pointToSegment(p, way.pts[i], way.pts[i + 1]);
+    if (dist < min) min = dist;
+  }
+  return min;
+}
+
+// The limit of the NEAREST tagged piece of the same road, if one is close
+// enough to be talking about the same stretch. Driving along a road whose
+// limit steps therefore picks up each value near where it applies, rather than
+// the road teaching us nothing because its pieces disagree somewhere.
+//
+// The way itself is skipped: it has no limit for this direction of travel, and
+// a maxspeed:forward must not become a backward limit by the back door.
+export function inheritedLimit(area, way, p) {
+  const key = roadKey(way.tags);
+  const pieces = key && area.inferred ? area.inferred.get(key) : null;
+  if (!pieces) return null;
+  let best = null;
+  let bestDist = INHERIT_MAX_M;
+  for (const piece of pieces) {
+    if (piece.way === way) continue;
+    const d = distanceToWay(piece.way, p, bestDist);
+    if (d < bestDist) {
+      bestDist = d;
+      best = piece.limit;
     }
   }
-  const out = new Map();
-  for (const [key, v] of seen) if (!v.conflict) out.set(key, v.limit);
-  return out;
+  return best;
 }
 
 // Identity of a road for inference: its number (ref) if it has one, else its
@@ -176,9 +221,9 @@ export function matchRoad(area, lat, lon, heading, speedMps, accuracyM) {
   }
   if (!best) return null;
   const own = wayLimit(best.way.tags, best.forward);
-  // Fall back to another piece of the same road before any paid lookup.
-  const key = own ? null : roadKey(best.way.tags);
-  const inherited = key && area.inferred ? area.inferred.get(key) || null : null;
+  // Fall back to the nearest tagged piece of the same road before any paid
+  // lookup.
+  const inherited = own ? null : inheritedLimit(area, best.way, p);
   return {
     wayId: best.way.id,
     name: best.way.tags.name || best.way.tags.ref || null,
