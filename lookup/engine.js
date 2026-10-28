@@ -25,6 +25,7 @@ import {
   areaContains,
   areaNeedsRefresh,
   matchRoad,
+  REFRESH_MARGIN_M,
 } from './osmArea.js';
 import { fetchTomTomLimit as defaultFetchTomTom } from './tomtom.js';
 
@@ -41,6 +42,9 @@ export const TOMTOM_BACKOFF_MS = 10 * 60 * 1000;
 const TOMTOM_CELL_MISS_TTL_MS = 10 * 60 * 1000;
 const AREA_RETRY_BASE_MS = 15 * 1000;
 const AREA_RETRY_MAX_MS = 2 * 60 * 1000;
+// How long to wait for an in-flight area download before paying TomTom for a
+// spot the downloaded box no longer covers.
+const AREA_GRACE_MS = 6 * 1000;
 const STALE_AFTER_MS = 60 * 1000;
 const MOVING_MPS = 2; // ~4.5 mph
 const MAX_ACCURACY_M = 50; // ignore worse fixes for matching
@@ -185,7 +189,12 @@ export function createLimitEngine({
       // Free first: OSM data this device already downloaded (a commute needs
       // no download at all after the first drive).
       if (areaStore) {
-        const stored = await areaStore.get(fix.lat, fix.lon).catch(() => null);
+        // Same margin the refresh test uses, so a store hit always means "no
+        // refresh needed" — otherwise the store keeps handing back the box we
+        // are trying to replace and the next one is never downloaded.
+        const stored = await areaStore
+          .get(fix.lat, fix.lon, REFRESH_MARGIN_M)
+          .catch(() => null);
         if (disposed || gen !== areaGen) return;
         if (stored) {
           area = stored;
@@ -351,9 +360,18 @@ export function createLimitEngine({
           // previous road's limit onto this one.
           propose(`n:${m.wayId}`, null);
         }
-      } else if ((area && areaContains(area, f.lat, f.lon)) || areaFailures > 0) {
-        // OSM has no road here, or OSM is down: fall back to TomTom by cell.
-        // (While the first area is still downloading, just wait.)
+      } else if (
+        (area && areaContains(area, f.lat, f.lon)) ||
+        areaFailures > 0 ||
+        (areaLoading && now() - areaStartedAt > AREA_GRACE_MS)
+      ) {
+        // OSM has no road here, OSM is down, or we have driven out of the
+        // downloaded box and the next one is taking too long: fall back to
+        // TomTom by cell. A download that answers within AREA_GRACE_MS costs
+        // nothing, so only a slow one (Overpass 504s are common) pays for a
+        // lookup. Without the third clause nothing at all was asked between
+        // leaving one box and the next arriving — the display just held the
+        // last road's limit until the 60 s stale rule blanked it.
         resolveByCell(f);
       }
     }

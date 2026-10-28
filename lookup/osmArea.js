@@ -15,7 +15,7 @@ export const OVERPASS_ENDPOINTS = [
 const AREA_HALF_SIZE_M = 800;
 const AREA_LOOKAHEAD_S = 20; // shift the box ahead by speed × this…
 const AREA_MAX_LOOKAHEAD_M = 400; // …capped here
-const REFRESH_MARGIN_M = 250; // refetch when this close to the box edge
+export const REFRESH_MARGIN_M = 250; // refetch when this close to the box edge
 const FETCH_TIMEOUT_MS = 15000; // area queries are heavier than point queries
 
 const DRIVABLE =

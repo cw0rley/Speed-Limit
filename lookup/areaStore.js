@@ -42,8 +42,15 @@ export function createAreaStore(storage, { maxAgeMs = AREA_MAX_AGE_MS, now = () 
   }
 
   return {
-    // A stored area covering this fix (with the usual edge margin), or null.
-    async get(lat, lon) {
+    // A stored area covering this fix by at least `marginM`, or null.
+    //
+    // The margin matters: the engine refetches once a fix is within
+    // REFRESH_MARGIN_M of the box edge, so a store that answered with margin 0
+    // handed back the same record the engine was trying to replace. Every fix
+    // in that edge band then "reloaded" the area from the device and no new box
+    // was ever downloaded, so the car always left the box with nothing to
+    // replace it (see areaFromStore in the stats: 81 reuses in 29 minutes).
+    async get(lat, lon, marginM = 0) {
       try {
         const raw = await storage.getItem(PREFIX + bucketKey(lat, lon));
         if (!raw) return null;
@@ -53,7 +60,7 @@ export function createAreaStore(storage, { maxAgeMs = AREA_MAX_AGE_MS, now = () 
         const area = parseArea({ elements: rec.elements }, rec.box);
         area.fetchedAt = rec.fetchedAt;
         area.fromStore = true;
-        return areaContains(area, lat, lon) ? area : null;
+        return areaContains(area, lat, lon, marginM) ? area : null;
       } catch (_) {
         return null;
       }

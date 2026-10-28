@@ -87,7 +87,10 @@ feeds it fixes from `handleLocation`.
     expands to the full table, with **Reset stats** at the top of it.
 - **`areaStore.js`** — `createAreaStore(storage)`: keeps downloaded **OSM** areas on the device
   (AsyncStorage) bucketed by a ~1.1 km cell, max 15 records, 400 KB each, 14-day age limit. A
-  repeated route needs **no download** (`areaFromStore` in stats). **TomTom answers are never
+  repeated route needs **no download** (`areaFromStore` in stats). **`get(lat, lon, marginM)`
+  must be called with `REFRESH_MARGIN_M`** (the engine does): with margin 0 it returns the very
+  box the engine is trying to replace, which wedges the refresh — see the 2026-10-27 note under
+  "Known gaps". **TomTom answers are never
   stored here** (their caching terms are still unanswered — case CS0014609).
 - **`osmArea.js`** — Overpass query (`convert` trims output to highway / maxspeed /
   maxspeed:forward / maxspeed:backward / oneway / name / ref; ~75 KB for a suburban box), parsing
@@ -381,6 +384,25 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
   policy effect); linking it out of Android entirely is the fuller fix if it ever matters.
 - **Drive mode is iOS-only and unverified** (`feat/carplay-live-activity`). Android has no
   background mode (would need a foreground service + `ACCESS_BACKGROUND_LOCATION`).
+- **Fixed 2026-10-27 — "no limit the whole way home" (drive of 2026-10-26).** Stats showed
+  48 % blank over 29 min with **81 "maps reused from device"** and 90/91 TomTom calls answered,
+  so neither provider was at fault. Two bugs compounded:
+  1. **`areaStore.get` used margin 0** while `areaNeedsRefresh` uses `REFRESH_MARGIN_M` (250 m).
+     Boxes are shifted up to 400 m *ahead* of travel, so driving back along the same road puts
+     you near each stored box's **trailing** edge: inside it (margin 0) but inside the refresh
+     margin too. Every fix asked the store, got the same box back, and reset `areaFailures` — so
+     no new box was ever downloaded and the car always left the box with nothing to replace it.
+     The outbound leg was fine because its boxes were freshly fetched and shifted the right way.
+  2. **Leaving a box with its replacement in flight asked nothing at all** — the cell fallback
+     was gated on `areaContains || areaFailures > 0`, both false in that window, so the display
+     held the last road's limit until the 60 s stale rule blanked it. Now a download still
+     running after `AREA_GRACE_MS` (6 s) lets TomTom answer by cell; a fast download still costs
+     nothing.
+  Both have regression tests (`lookup/__tests__`, verified to fail without the fixes). Drive mode
+  also now **resumes itself** when the car moves again after the 10-minute idle stop (foreground
+  only, 5 s of movement, and only when the idle timer was what stopped it — a stop the user or
+  the paywall asked for stays off). That was *not* the cause of the blank drive, but it did mean
+  the Live Activity was dead for the trip home.
 - **No trip history / max-speed recorder.** Would be a ring buffer of `(t, speed, lat, lon)`.
 - **No speed smoothing.** Raw OS speed jitters near zero; a ~1 s EMA would feel nicer.
 - **HERE code is gone** (see history above); it may return only behind verified guardrails. Revoke the old key on the HERE account.

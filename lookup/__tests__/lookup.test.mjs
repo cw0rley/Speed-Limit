@@ -500,6 +500,104 @@ test('areaStore: stale records are ignored', async () => {
   assert.equal(await store.get(LAT, LON), null, 'stale record is not');
 });
 
+// Real drive 2026-10-27: "Maps reused from device 81" in 29 minutes, and the
+// whole way home showed nothing. Boxes are shifted ahead in the direction of
+// travel, so driving back through them puts you near their trailing edge —
+// inside the box, but within the refresh margin. The store answered with
+// margin 0, so it kept handing back the very box the engine was trying to
+// replace: every fix "reloaded" it, no new box was ever downloaded, and the
+// car left the box with nothing to replace it.
+test('areaStore: a box you are about to leave is not reused forever', async () => {
+  const mem = new Map();
+  const storage = {
+    getItem: async (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: async (k, v) => { mem.set(k, v); },
+    removeItem: async (k) => { mem.delete(k); },
+  };
+  const store = createAreaStore(storage);
+  const raw = splitRoadJson().elements;
+
+  // Stored while driving EAST: box spans x = -400 m … +1200 m.
+  await store.put(LAT, LON, raw, areaBoxFor(LAT, LON, 90, 20));
+
+  let clock = 10_000_000;
+  let downloads = 0;
+  const engine = createLimitEngine({
+    now: () => clock,
+    areaStore: store,
+    fetchArea: async (box) => {
+      downloads += 1;
+      const a = parseArea({ elements: raw }, box);
+      a.raw = raw;
+      return a;
+    },
+    fetchTomTom: async () => ({ status: 'backoff' }),
+  });
+
+  // Now drive WEST back through it, towards the trailing edge at -400 m.
+  for (let e = -100; e >= -500; e -= 50) {
+    clock += 1000;
+    engine.update({ ...at(0, e), heading: 270, speed: 20, accuracy: 5 });
+    await flush();
+  }
+
+  const stats = engine.getStats();
+  assert.ok(downloads >= 1, 'the next box is downloaded before the edge');
+  assert.ok(
+    stats.areaFromStore <= 1,
+    `store answered once at most, not once per fix (got ${stats.areaFromStore})`
+  );
+});
+
+// Leaving a box while its replacement is still downloading used to ask nothing
+// at all — not OSM (the old box no longer covers us) and not TomTom (the cell
+// fallback was gated on areaContains/areaFailures). The display just held the
+// last road's limit until the 60 s stale rule blanked it.
+test('a slow area download falls back to TomTom instead of asking nothing', async () => {
+  let clock = 10_000_000;
+  let fetches = 0;
+  let secondFetchAt = 0;
+  let tomtomAt = 0;
+
+  const engine = createLimitEngine({
+    now: () => clock,
+    fetchArea: async (box) => {
+      fetches += 1;
+      if (fetches === 1) {
+        const a = parseArea(syntheticJson(), box);
+        a.raw = syntheticJson().elements;
+        return a;
+      }
+      secondFetchAt = clock;
+      return new Promise(() => {}); // Overpass hanging, as it often does
+    },
+    fetchTomTom: async () => {
+      if (!tomtomAt) tomtomAt = clock;
+      return { status: 'hit', limit: { value: 45, unit: 'mph' } };
+    },
+  });
+
+  // First box loads around the origin, shifted east to x = -400 … +1200 m.
+  engine.update({ ...at(0, 0), heading: 90, speed: 20, accuracy: 5 });
+  await flush();
+
+  // Now well past the box edge (1200 m), so nothing on the device covers us
+  // and the replacement never arrives.
+  for (let e = 1500; e <= 2500; e += 100) {
+    clock += 2000;
+    engine.update({ ...at(0, e), heading: 90, speed: 20, accuracy: 5 });
+    await flush();
+  }
+
+  assert.ok(secondFetchAt > 0, 'a replacement box was requested');
+  assert.ok(tomtomAt > 0, 'TomTom was asked while the download hung');
+  const waited = tomtomAt - secondFetchAt;
+  assert.ok(
+    waited >= 6000 && waited < 25000,
+    `asked after the grace period but before the watchdog (waited ${waited} ms)`
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Worker entitlement rules (pure parts of proxy/worker.js)
 // ---------------------------------------------------------------------------

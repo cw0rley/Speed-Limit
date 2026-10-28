@@ -12,6 +12,7 @@ import {
   TextInput,
   KeyboardAvoidingView,
   ScrollView,
+  AppState,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
@@ -167,6 +168,14 @@ const DRIVE_IDLE_STOP_MS = 10 * 60 * 1000;
 const MOVING_MPS = 2;
 let lastMovingAt = 0;
 
+// Set only when the idle timer above turned drive mode off, so driving again
+// brings the Live Activity back without another tap. A stop the user asked for
+// (or the paywall forced) leaves this false and stays off until they tap.
+let resumeDriveWhenMoving = false;
+let movingSinceTs = 0;
+let driveStarting = false;
+const DRIVE_RESUME_MS = 5 * 1000; // sustained movement before resuming
+
 // True while the paywall blocks the app: no map downloads or TomTom calls.
 let lookupsPaused = false;
 
@@ -185,8 +194,37 @@ function handleLocation(loc) {
   const now = Date.now();
   if (speedMps > MOVING_MPS) lastMovingAt = now;
   if (drive.driveOn && now - lastMovingAt > DRIVE_IDLE_STOP_MS) {
-    stopDriveMode().catch(() => {});
+    stopDriveMode({ auto: true }).catch(() => {});
+  } else if (!drive.driveOn && resumeDriveWhenMoving) {
+    maybeResumeDriveMode(speedMps, now);
   }
+}
+
+// Driving again after the idle stop. ActivityKit only starts an activity from
+// the foreground, and a few seconds of real movement avoids restarting on a
+// GPS twitch while parked.
+function maybeResumeDriveMode(speedMps, now) {
+  if (speedMps <= MOVING_MPS) {
+    movingSinceTs = 0;
+    return;
+  }
+  if (!movingSinceTs) movingSinceTs = now;
+  if (
+    now - movingSinceTs < DRIVE_RESUME_MS ||
+    driveStarting ||
+    lookupsPaused ||
+    !driveModeSupported ||
+    AppState.currentState !== 'active'
+  ) {
+    return;
+  }
+  movingSinceTs = 0;
+  driveStarting = true;
+  startDriveMode()
+    .catch(() => {})
+    .finally(() => {
+      driveStarting = false;
+    });
 }
 
 // ---- Live Activity (CarPlay Dashboard / Lock Screen / Dynamic Island) ----
@@ -250,10 +288,13 @@ async function startDriveMode() {
     liveOn = true;
   }
   lastMovingAt = Date.now(); // the idle timer starts now
+  resumeDriveWhenMoving = false;
   setDrive({ driveOn: true });
 }
 
-async function stopDriveMode() {
+async function stopDriveMode({ auto = false } = {}) {
+  resumeDriveWhenMoving = auto;
+  movingSinceTs = 0;
   liveOn = false;
   liveSig = '';
   setDrive({ driveOn: false });
@@ -329,7 +370,8 @@ function LookupStats() {
     ['  inherited from same road', pct(stats.inferredSeconds || 0)],
     ['Limit from TomTom', pct(stats.tomtomSeconds)],
     ['No limit shown', pct(stats.unknownSeconds)],
-    ['Map downloads (failed / timed out)', `${stats.areaFetches} (${stats.areaFailures} / ${stats.areaTimeouts || 0})`],
+    ['Map downloads', `${stats.areaFetches}`],
+    ['  failed / timed out', `${stats.areaFailures} / ${stats.areaTimeouts || 0}`],
     ['Maps reused from device', `${stats.areaFromStore || 0}`],
     ['Limit changes', `${stats.limitChanges || 0}`],
     ['TomTom calls', `${stats.tomtomCalls}`],
@@ -1127,12 +1169,17 @@ const styles = StyleSheet.create({
   statsLabel: {
     color: '#bbb',
     fontSize: 13,
+    // A long label used to wrap and squeeze the value to zero width, which hid
+    // the map-download counters completely at larger text sizes.
+    flexShrink: 1,
+    paddingRight: 8,
   },
   statsValue: {
     color: '#fff',
     fontSize: 13,
     fontWeight: '600',
     fontVariant: ['tabular-nums'],
+    flexShrink: 0,
   },
   subActions: {
     flexDirection: 'row',
