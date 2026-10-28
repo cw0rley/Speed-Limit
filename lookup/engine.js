@@ -70,6 +70,7 @@ export function emptyStats() {
     movingSeconds: 0,
     osmSeconds: 0, // moving with a limit from OSM (tagged on this road)
     inferredSeconds: 0, // …from another piece of the same road
+    impliedSeconds: 0, // …from the statutory default its tags name
     tomtomSeconds: 0, // moving with a limit from TomTom
     unknownSeconds: 0, // moving with no limit shown
     areaFetches: 0,
@@ -351,7 +352,8 @@ export function createLimitEngine({
     if (fix.speed <= MOVING_MPS || dt === 0) return;
     stats.movingSeconds += dt;
     const src = current.limit && current.limit.source;
-    if (src === 'osm' && current.limit.inferred) stats.inferredSeconds += dt;
+    if (src === 'osm' && current.limit.implied) stats.impliedSeconds += dt;
+    else if (src === 'osm' && current.limit.inferred) stats.inferredSeconds += dt;
     else if (src === 'osm') stats.osmSeconds += dt;
     else if (src === 'tomtom') stats.tomtomSeconds += dt;
     else stats.unknownSeconds += dt;
@@ -374,6 +376,7 @@ export function createLimitEngine({
           source: 'osm',
           road: m.name,
           inferred: !!m.inferred,
+          implied: !!m.implied,
         });
       } else if (m) {
         // Road known, OSM has no limit for it: TomTom once per road+direction.

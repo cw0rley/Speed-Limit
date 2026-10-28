@@ -21,7 +21,8 @@
 
 import { parseMaxspeed, wayLimit } from '../lookup/maxspeed.js';
 import { parseArea, areaBoxFor, inheritedLimit } from '../lookup/osmArea.js';
-import { haversine, project } from '../lookup/geo.js';
+import { zoneLimit, parseZoneLimit } from '../lookup/zoneLimits.js';
+import { haversine } from '../lookup/geo.js';
 
 const DRIVABLE =
   'motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|' +
@@ -83,6 +84,9 @@ for (const el of json.elements || []) {
       oneway: raw.oneway,
       name: raw.name,
       ref: raw.ref,
+      mt: raw['maxspeed:type'],
+      zm: raw['zone:maxspeed'],
+      sm: raw['source:maxspeed'],
     },
   });
   let metres = 0;
@@ -105,10 +109,11 @@ if (total === 0) {
 
 let direct = 0;
 let inherited = 0;
-let zoneOnly = 0;
+let implied = 0;
+let unresolvedZone = 0;
 let unknown = 0;
 const unknownByClass = new Map();
-const zoneValues = new Map();
+const unmappedZoneValues = new Map();
 
 for (const way of area.ways) {
   const e = extra.get(way.id);
@@ -117,6 +122,10 @@ for (const way of area.ways) {
     direct += e.metres;
     continue;
   }
+  const zone = zoneLimit(way.tags);
+  // A zone tag we cannot turn into a number is the actionable case: it is
+  // coverage sitting right there, waiting on one table entry.
+  const unmapped = !zone && e.zone && !parseZoneLimit(e.zone) ? e.zone : null;
   // Walk the way rather than testing its midpoint: inheritance depends on
   // where the car is, so a long way can be in reach of a tagged piece at one
   // end and out of reach at the other. OSM segments are short, so stepping
@@ -128,9 +137,11 @@ for (const way of area.ways) {
     const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     if (inheritedLimit(area, way, mid)) {
       inherited += segLen;
-    } else if (e.zone) {
-      zoneOnly += segLen;
-      zoneValues.set(e.zone, (zoneValues.get(e.zone) || 0) + segLen);
+    } else if (zone) {
+      implied += segLen;
+    } else if (unmapped) {
+      unresolvedZone += segLen;
+      unmappedZoneValues.set(unmapped, (unmappedZoneValues.get(unmapped) || 0) + segLen);
     } else {
       unknown += segLen;
       unknownByClass.set(e.cls, (unknownByClass.get(e.cls) || 0) + segLen);
@@ -145,11 +156,12 @@ console.log(`\n${area.ways.length} drivable ways, ${(total / 1000).toFixed(1)} k
 console.log('Share of road LENGTH the app can label with no paid lookup:');
 console.log(`  maxspeed on the way itself          ${pct(direct)}%  (${km(direct)} km)`);
 console.log(`  + inherited from the nearest piece   ${pct(inherited)}%  (${km(inherited)} km)`);
+console.log(`  + statutory default from its tags   ${pct(implied)}%  (${km(implied)} km)`);
 console.log(`  ----------------------------------------------`);
-console.log(`  = today                             ${pct(direct + inherited)}%`);
-console.log('\nWhat is left, and what would reach it:');
-console.log(`  B: statutory-default zone tags      ${pct(zoneOnly)}%  (${km(zoneOnly)} km)`);
-console.log(`  still unknown after B               ${pct(unknown)}%  (${km(unknown)} km)`);
+console.log(`  = today                             ${pct(direct + inherited + implied)}%`);
+console.log('\nWhat is left:');
+console.log(`  zone tag we cannot resolve          ${pct(unresolvedZone)}%  (${km(unresolvedZone)} km)`);
+console.log(`  nothing to go on                    ${pct(unknown)}%  (${km(unknown)} km)`);
 
 // Where the remaining blank road is — this decides whether lever C (per-class
 // statutory defaults) is worth its accuracy risk, and for which classes.
@@ -158,10 +170,11 @@ for (const [cls, m] of [...unknownByClass].sort((a, b) => b[1] - a[1])) {
   console.log(`  ${String(cls).padEnd(20)} ${pct(m)}%  (${km(m)} km)`);
 }
 
-// Which zone-tag values occur, so a lookup table only has to cover these.
-if (zoneValues.size) {
-  console.log('\nZone-tag values present (length-weighted):');
-  for (const [v, m] of [...zoneValues].sort((a, b) => b[1] - a[1]).slice(0, 15)) {
+// The actionable list: each of these is road that would light up for one
+// verified entry in lookup/zoneLimits.js.
+if (unmappedZoneValues.size) {
+  console.log('\nZone-tag values present but not in zoneLimits.js:');
+  for (const [v, m] of [...unmappedZoneValues].sort((a, b) => b[1] - a[1]).slice(0, 15)) {
     console.log(`  ${String(v).padEnd(28)} ${pct(m)}%`);
   }
 }

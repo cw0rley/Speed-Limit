@@ -413,6 +413,7 @@ test('engine: a hung map download is abandoned and retried (no timers needed)', 
 // ---------------------------------------------------------------------------
 import { createAreaStore } from '../areaStore.js';
 import { inferRoadLimits, roadKey, inheritedLimit, INHERIT_MAX_M } from '../osmArea.js';
+import { parseZoneLimit } from '../zoneLimits.js';
 
 function splitRoadJson() {
   // "Main St" in three pieces west->east: the middle one has no maxspeed.
@@ -461,6 +462,51 @@ test('a road whose limit steps inherits the nearest value, not nothing', () => {
   assert.equal(mWest.limit.value, 30, 'from the 30 mph piece beside it');
   assert.equal(mEast.inferred, true, 'east end inherits');
   assert.equal(mEast.limit.value, 50, 'from the 50 mph piece beside it');
+});
+
+test('parseZoneLimit: numbers are taken as given, classes must be known', () => {
+  // Stated outright — no statute knowledge involved.
+  assert.deepEqual(parseZoneLimit('US-NC:35'), { value: 35, unit: 'mph' });
+  assert.deepEqual(parseZoneLimit('DE:30'), { value: 30, unit: 'kmh' });
+  assert.deepEqual(parseZoneLimit('GB:20'), { value: 20, unit: 'mph' });
+  // Named statutory classes we have a number for.
+  assert.deepEqual(parseZoneLimit('GB:nsl_single'), { value: 60, unit: 'mph' });
+  assert.deepEqual(parseZoneLimit('de:urban'), { value: 50, unit: 'kmh' });
+  // Anything we cannot resolve honestly stays unknown.
+  assert.equal(parseZoneLimit('sign'), null, 'says nothing about the number');
+  assert.equal(parseZoneLimit('US:urban'), null, 'varies by state');
+  assert.equal(parseZoneLimit('DE:motorway'), null, 'advisory, not a limit');
+  assert.equal(parseZoneLimit(''), null);
+  assert.equal(parseZoneLimit(null), null);
+  assert.equal(parseZoneLimit('US-NC:0'), null);
+});
+
+test('a way with only a statutory-default tag gets a limit', () => {
+  const zoneWay = (id, tags) => ({
+    type: 'way', id,
+    geometry: { type: 'LineString', coordinates: [[LON + dLon(-300), LAT + dLat(800)], [LON + dLon(300), LAT + dLat(800)]] },
+    tags: { highway: 'residential', name: 'Zone Rd', ...tags },
+  });
+
+  const implied = parseArea({ elements: [zoneWay(90, { mt: 'US-NC:35' })] }, syntheticBox);
+  const p = at(800, 0);
+  const m = matchRoad(implied, p.lat, p.lon, 90, 20, 5);
+  assert.equal(m.limit.value, 35, 'the statutory default is shown');
+  assert.equal(m.implied, true, 'and marked as implied, not surveyed');
+  assert.equal(m.inferred, false);
+
+  // A posted maxspeed on the way itself still wins.
+  const posted = parseArea(
+    { elements: [zoneWay(91, { mt: 'US-NC:35', maxspeed: '45 mph' })] },
+    syntheticBox
+  );
+  const mp = matchRoad(posted, p.lat, p.lon, 90, 20, 5);
+  assert.equal(mp.limit.value, 45, 'a sign beats the statutory default');
+  assert.equal(mp.implied, false);
+
+  // An unresolvable value leaves the way unknown rather than guessing.
+  const vague = parseArea({ elements: [zoneWay(92, { mt: 'US:urban' })] }, syntheticBox);
+  assert.equal(matchRoad(vague, p.lat, p.lon, 90, 20, 5).limit, null);
 });
 
 test('inheritance does not reach across a distant road', () => {

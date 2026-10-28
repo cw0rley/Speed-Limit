@@ -5,6 +5,7 @@
 
 import { angleDiff, bearing, metersPerDegree, pointToSegment, project } from './geo.js';
 import { wayLimit } from './maxspeed.js';
+import { zoneLimit } from './zoneLimits.js';
 import { fetchWithTimeout, USER_AGENT } from './net.js';
 
 export const OVERPASS_ENDPOINTS = [
@@ -32,7 +33,7 @@ export function buildAreaQuery(box) {
   const bbox = `${box.south.toFixed(5)},${box.west.toFixed(5)},${box.north.toFixed(5)},${box.east.toFixed(5)}`;
   return `[out:json][timeout:12];
 way["highway"~"^(${DRIVABLE})$"](${bbox});
-convert way ::id=id(),::geom=geom(),highway=t["highway"],maxspeed=t["maxspeed"],mf=t["maxspeed:forward"],mb=t["maxspeed:backward"],oneway=t["oneway"],name=t["name"],ref=t["ref"];
+convert way ::id=id(),::geom=geom(),highway=t["highway"],maxspeed=t["maxspeed"],mf=t["maxspeed:forward"],mb=t["maxspeed:backward"],oneway=t["oneway"],name=t["name"],ref=t["ref"],mt=t["maxspeed:type"],zm=t["zone:maxspeed"],sm=t["source:maxspeed"];
 out geom;`;
 }
 
@@ -80,6 +81,10 @@ export function parseArea(json, box) {
       oneway: blank(raw.oneway),
       name: blank(raw.name),
       ref: blank(raw.ref),
+      // Statutory-default tags (lookup/zoneLimits.js).
+      mt: blank(raw.mt),
+      zm: blank(raw.zm),
+      sm: blank(raw.sm),
     };
     const pts = coords.map(([lon, lat]) => project(lat, lon, originLat, originLon, mpd));
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -224,14 +229,20 @@ export function matchRoad(area, lat, lon, heading, speedMps, accuracyM) {
   // Fall back to the nearest tagged piece of the same road before any paid
   // lookup.
   const inherited = own ? null : inheritedLimit(area, best.way, p);
+  // Last, the statutory default this way's tags imply. It goes after
+  // inheritance on purpose: a surveyed sign on the same road is evidence, a
+  // statutory default is our own table, so the table's blast radius stays
+  // limited to roads where nothing else is known.
+  const implied = own || inherited ? null : zoneLimit(best.way.tags);
   return {
     wayId: best.way.id,
     name: best.way.tags.name || best.way.tags.ref || null,
     highway: best.way.tags.highway,
     forward: best.forward,
     dist: best.dist,
-    limit: own || inherited,
+    limit: own || inherited || implied,
     inferred: !own && !!inherited,
+    implied: !own && !inherited && !!implied,
   };
 }
 

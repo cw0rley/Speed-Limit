@@ -60,6 +60,11 @@ feeds it fixes from `handleLocation`.
      back-off (15 s → 2 min). Every fix is then **matched to a road on the device**
      (`matchRoad`: distance + heading agreement + one-way penalty).
   2. **Matched road with OSM maxspeed** → shown (`source: 'osm'`).
+  2c. **No maxspeed anywhere on the road, but the way names a statutory default**
+     (`maxspeed:type` / `zone:maxspeed` / `source:maxspeed`) → resolved by `lookup/zoneLimits.js`
+     and shown as `source: 'osm'` with `implied: true`; counted in `impliedSeconds`. Applied
+     after 2b, and only for values the table can resolve honestly. See the 2026-10-28 lever B
+     note under "Known gaps".
   2b. **Matched road without maxspeed, but another piece of the SAME road has one** → inherited
      from the **nearest** tagged piece within `INHERIT_MAX_M` (800 m) — `inferRoadLimits` /
      `roadKey` / `inheritedLimit` in `osmArea.js`; key = highway class + `ref` or `name`. Shown
@@ -97,8 +102,12 @@ feeds it fixes from `handleLocation`.
   box the engine is trying to replace, which wedges the refresh — see the 2026-10-27 note under
   "Known gaps". **TomTom answers are never
   stored here** (their caching terms are still unanswered — case CS0014609).
+- **`zoneLimits.js`** — `parseZoneLimit` / `zoneLimit`: statutory defaults implied by
+  `maxspeed:type` / `zone:maxspeed` / `source:maxspeed`. Small, explicit table; unresolvable
+  values return null rather than guessing. **Verify entries against statute before release.**
 - **`osmArea.js`** — Overpass query (`convert` trims output to highway / maxspeed /
-  maxspeed:forward / maxspeed:backward / oneway / name / ref; ~75 KB for a suburban box), parsing
+  maxspeed:forward / maxspeed:backward / oneway / name / ref / maxspeed:type / zone:maxspeed /
+  source:maxspeed; ~75 KB for a suburban box), parsing
   (blank tags → `undefined`, motorways implied one-way), `matchRoad`, `areaBoxFor`. Endpoints
   `overpass-api.de`, then `overpass.kumi.systems`, 15 s timeout each, identifying `User-Agent`.
 - **`tomtom.js`** — `GET ${PROXY_URL}/limit?lat&lon&heading` (5 s timeout) →
@@ -445,11 +454,22 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
     free OSM-only build that is strictly better than blank, and it also cuts quota use.
     *Possible refinement:* prefer shared-node connectivity over raw distance — the Overpass
     `convert` currently drops node ids, so that needs a query change first.
-  - **B — statutory-default tags.** `maxspeed:type` / `source:maxspeed` / `zone:maxspeed` say
-    "the limit here is the statutory default", which is the real legal limit even unposted. The
-    `convert` in `buildAreaQuery` **does not download them**, so step one is adding them to the
-    query; then a value → number table (`US-NC:urban` etc.) for whatever values the tool reports
-    as actually present.
+  - **B — statutory-default tags. DONE 2026-10-28.** `maxspeed:type` / `zone:maxspeed` /
+    `source:maxspeed` say "there is no sign; the limit is the statutory default", which is the
+    real legal limit. They are now downloaded (`mt` / `zm` / `sm` in the `convert`) and resolved
+    by **`lookup/zoneLimits.js`**, applied in `matchRoad` **after** `own` and `inherited` — a
+    surveyed sign is evidence, a statutory default is our own table, so the table's blast radius
+    stays limited to roads where nothing else is known. Counted separately as `impliedSeconds`
+    (Settings → "implied by road type") so the next drive measures this lever on its own.
+    - Values stating a number (`US-NC:35`, `DE:30`) are used as given — nothing to get wrong.
+    - Named classes need a table entry: `GB:nsl_single|nsl_dual|motorway`, `DE:urban|rural`,
+      `US-NC:urban` (35) / `US-NC:rural` (55). **The US-NC pair and anything added later must be
+      verified against statute before a public release** — a wrong number here is worse than a
+      blank sign.
+    - Bare `US:urban` / `US:rural` are **deliberately unresolved**: the default varies by state.
+      `tools/osm-coverage.mjs` now lists zone values present in an area that `zoneLimits.js`
+      cannot resolve — that is the actionable list, each entry being road that lights up for one
+      verified table addition.
   - **C — per-class defaults** (e.g. all `residential` → 25 mph). Biggest coverage, biggest
     accuracy risk, and statutes vary by state (NC's unposted municipal default is 35, not 25).
     Only worth it if the tool shows a class dominating the remaining blank length. Do last, if
@@ -487,6 +507,7 @@ speed-limit/
   targets/live-activity/ # SwiftUI Live Activity extension (CarPlay Dashboard / Lock Screen)
   modules/speed-limit-activity/ # local Expo module: JS -> ActivityKit bridge
   lookup/                # speed-limit engine: OSM area match + TomTom fallback (+ __tests__)
+  lookup/zoneLimits.js   # statutory defaults from maxspeed:type etc. — verify before release
   subscription/          # RevenueCat store, Paywall, notice banner, offer copy (+ __tests__)
   proxy/
     worker.js            # Cloudflare Worker: TomTom /limit with D1 caps (no shared cache); /here-route = 410
