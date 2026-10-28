@@ -20,7 +20,7 @@
 // so "today" is what the app actually achieves, not an optimistic model of it.
 
 import { parseMaxspeed, wayLimit } from '../lookup/maxspeed.js';
-import { parseArea, areaBoxFor, inheritedLimit } from '../lookup/osmArea.js';
+import { parseArea, areaBoxFor, inheritedLimit, areaDefaultLimit } from '../lookup/osmArea.js';
 import { zoneLimit, parseZoneLimit } from '../lookup/zoneLimits.js';
 import { haversine } from '../lookup/geo.js';
 
@@ -110,6 +110,7 @@ if (total === 0) {
 let direct = 0;
 let inherited = 0;
 let implied = 0;
+let assumed = 0;
 let unresolvedZone = 0;
 let unknown = 0;
 const unknownByClass = new Map();
@@ -139,6 +140,8 @@ for (const way of area.ways) {
       inherited += segLen;
     } else if (zone) {
       implied += segLen;
+    } else if (areaDefaultLimit(area, way, mid)) {
+      assumed += segLen;
     } else if (unmapped) {
       unresolvedZone += segLen;
       unmappedZoneValues.set(unmapped, (unmappedZoneValues.get(unmapped) || 0) + segLen);
@@ -157,8 +160,9 @@ console.log('Share of road LENGTH the app can label with no paid lookup:');
 console.log(`  maxspeed on the way itself          ${pct(direct)}%  (${km(direct)} km)`);
 console.log(`  + inherited from the nearest piece   ${pct(inherited)}%  (${km(inherited)} km)`);
 console.log(`  + statutory default from its tags   ${pct(implied)}%  (${km(implied)} km)`);
+console.log(`  + default nearby roads agree on     ${pct(assumed)}%  (${km(assumed)} km)`);
 console.log(`  ----------------------------------------------`);
-console.log(`  = today                             ${pct(direct + inherited + implied)}%`);
+console.log(`  = today                             ${pct(direct + inherited + implied + assumed)}%`);
 console.log('\nWhat is left:');
 console.log(`  zone tag we cannot resolve          ${pct(unresolvedZone)}%  (${km(unresolvedZone)} km)`);
 console.log(`  nothing to go on                    ${pct(unknown)}%  (${km(unknown)} km)`);

@@ -21,6 +21,11 @@ export const REFRESH_MARGIN_M = 250; // refetch when this close to the box edge
 // Wide enough to cover the gaps OSM leaves on a rural road, tight enough that a
 // limit does not jump a town boundary. This is the accuracy/coverage dial.
 export const INHERIT_MAX_M = 800;
+// How far a way with no limit of its own may look for roads of its own class
+// that name the statutory default. Tighter than INHERIT_MAX_M: this is reading
+// a legal context off the neighbourhood, and the context changes at municipal
+// boundaries. The accuracy/coverage dial for lever C.
+export const ZONE_NEARBY_M = 600;
 const FETCH_TIMEOUT_MS = 15000; // area queries are heavier than point queries
 
 const DRIVABLE =
@@ -96,7 +101,61 @@ export function parseArea(json, box) {
     }
     ways.push({ id: Number(el.id), tags, oneway: onewayOf(tags), pts, minX, minY, maxX, maxY });
   }
-  return { box, originLat, originLon, mpd, ways, inferred: inferRoadLimits(ways), fetchedAt: Date.now() };
+  return {
+    box,
+    originLat,
+    originLon,
+    mpd,
+    ways,
+    inferred: inferRoadLimits(ways),
+    zones: indexZones(ways),
+    fetchedAt: Date.now(),
+  };
+}
+
+// Ways that name a statutory default, grouped by road class, so a way with no
+// tags at all can see what the law says about roads like it near by.
+export function indexZones(ways) {
+  const byClass = new Map(); // highway class -> [{ limit, way }]
+  for (const way of ways) {
+    if (!way.tags.highway) continue;
+    const limit = zoneLimit(way.tags);
+    if (!limit) continue;
+    const cls = way.tags.highway.replace(/_link$/, '');
+    let list = byClass.get(cls);
+    if (!list) byClass.set(cls, (list = []));
+    list.push({ limit, way });
+  }
+  return byClass;
+}
+
+// The statutory default that roads of this class obey around here, if the
+// neighbours agree on one. This is the last resort: the way itself says
+// nothing, no piece of its road says anything, and we are reading the local
+// legal context off other roads instead.
+//
+// Agreement is required, which is the opposite of the nearest-wins rule used
+// for inheriting along a single road — and deliberately so. Inheriting along a
+// road follows a limit that is *expected* to step, so the nearest piece is the
+// best evidence. Here we are inferring a property of an AREA (is this inside
+// municipal limits or not), so two different answers near by means the
+// boundary runs through here and we genuinely do not know which side we are
+// on. Guessing a speed limit on a boundary is exactly the case worth refusing.
+export function areaDefaultLimit(area, way, p) {
+  if (!area.zones || !way.tags.highway) return null;
+  const pieces = area.zones.get(way.tags.highway.replace(/_link$/, ''));
+  if (!pieces) return null;
+  let agreed = null;
+  for (const piece of pieces) {
+    if (piece.way === way) continue;
+    if (distanceToWay(piece.way, p, ZONE_NEARBY_M) > ZONE_NEARBY_M) continue;
+    if (!agreed) {
+      agreed = piece.limit;
+    } else if (agreed.value !== piece.limit.value || agreed.unit !== piece.limit.unit) {
+      return null; // a zone boundary runs through here
+    }
+  }
+  return agreed;
 }
 
 // OSM splits a road into many ways, and often only some of them carry a
@@ -234,15 +293,20 @@ export function matchRoad(area, lat, lon, heading, speedMps, accuracyM) {
   // statutory default is our own table, so the table's blast radius stays
   // limited to roads where nothing else is known.
   const implied = own || inherited ? null : zoneLimit(best.way.tags);
+  // Last of all: what roads of this class obey around here. Nothing on this
+  // way or its road said anything, so this is read off the neighbourhood.
+  const assumed =
+    own || inherited || implied ? null : areaDefaultLimit(area, best.way, p);
   return {
     wayId: best.way.id,
     name: best.way.tags.name || best.way.tags.ref || null,
     highway: best.way.tags.highway,
     forward: best.forward,
     dist: best.dist,
-    limit: own || inherited || implied,
+    limit: own || inherited || implied || assumed,
     inferred: !own && !!inherited,
     implied: !own && !inherited && !!implied,
+    assumed: !own && !inherited && !implied && !!assumed,
   };
 }
 

@@ -60,6 +60,9 @@ feeds it fixes from `handleLocation`.
      back-off (15 s → 2 min). Every fix is then **matched to a road on the device**
      (`matchRoad`: distance + heading agreement + one-way penalty).
   2. **Matched road with OSM maxspeed** → shown (`source: 'osm'`).
+  2d. **Nothing anywhere, but roads of the same class near by name a statutory default** →
+     `areaDefaultLimit` (within `ZONE_NEARBY_M`, neighbours must agree) → `assumed: true`,
+     counted in `assumedSeconds`. Applied last. See the 2026-10-28 lever C note.
   2c. **No maxspeed anywhere on the road, but the way names a statutory default**
      (`maxspeed:type` / `zone:maxspeed` / `source:maxspeed`) → resolved by `lookup/zoneLimits.js`
      and shown as `source: 'osm'` with `implied: true`; counted in `impliedSeconds`. Applied
@@ -470,10 +473,24 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
       `tools/osm-coverage.mjs` now lists zone values present in an area that `zoneLimits.js`
       cannot resolve — that is the actionable list, each entry being road that lights up for one
       verified table addition.
-  - **C — per-class defaults** (e.g. all `residential` → 25 mph). Biggest coverage, biggest
-    accuracy risk, and statutes vary by state (NC's unposted municipal default is 35, not 25).
-    Only worth it if the tool shows a class dominating the remaining blank length. Do last, if
-    at all.
+  - **C — the default roads of this class obey near by. DONE 2026-10-28.** Done as *spatial*
+    zone inference rather than a hard-coded `residential → 25` table, because the app cannot
+    know its jurisdiction and US statutes differ by state: `areaDefaultLimit` /
+    `indexZones` in `osmArea.js` read the legal context off **other ways of the same highway
+    class** within `ZONE_NEARBY_M` (600 m) that carry a zone tag `zoneLimits.js` can resolve.
+    No new statute knowledge beyond the lever B table, and it only fires where a local mapper
+    has already asserted the classification. Marked `assumed: true`, counted in
+    `assumedSeconds` (Settings → "assumed from nearby roads"), applied last of all.
+    - **Neighbours must agree**, which is the opposite of lever A's nearest-wins — on purpose.
+      Inheriting along one road follows a limit that is *expected* to step, so nearest is best.
+      Here we infer a property of an AREA (inside municipal limits or not), so two answers near
+      by means a boundary runs through and we refuse. Guessing on a boundary is the case most
+      worth refusing.
+    - Same highway class only. Conservative: in NC the municipal 35 applies to every class, but
+      `GB:nsl_single` (60) vs `GB:nsl_dual` (70) is class-specific, so crossing classes is not
+      safe everywhere. Relax only if the tool shows it costing real coverage.
+    - **Does not cover areas with no zone tags at all.** Nothing honest can: filling those needs
+      a per-jurisdiction table the app has no way to select. `ZONE_NEARBY_M` is the dial.
   - The tool also prints `maxspeed` values `parseMaxspeed` rejects. If something common shows up
     there (`signals`, `variable`, conditional forms), that is a cheaper and safer fix than any
     of the levers.

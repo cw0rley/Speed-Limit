@@ -412,7 +412,7 @@ test('engine: a hung map download is abandoned and retried (no timers needed)', 
 // Cost savings: inherit limits from the same road; reuse OSM data across drives
 // ---------------------------------------------------------------------------
 import { createAreaStore } from '../areaStore.js';
-import { inferRoadLimits, roadKey, inheritedLimit, INHERIT_MAX_M } from '../osmArea.js';
+import { inferRoadLimits, roadKey, inheritedLimit, INHERIT_MAX_M, ZONE_NEARBY_M } from '../osmArea.js';
 import { parseZoneLimit } from '../zoneLimits.js';
 
 function splitRoadJson() {
@@ -507,6 +507,78 @@ test('a way with only a statutory-default tag gets a limit', () => {
   // An unresolvable value leaves the way unknown rather than guessing.
   const vague = parseArea({ elements: [zoneWay(92, { mt: 'US:urban' })] }, syntheticBox);
   assert.equal(matchRoad(vague, p.lat, p.lon, 90, 20, 5).limit, null);
+});
+
+// Lever C: a way with nothing of its own, reading the legal context off roads
+// of the same class near by.
+test('an untagged way takes the statutory default its neighbours agree on', () => {
+  const road = (id, north, tags) => ({
+    type: 'way', id,
+    geometry: { type: 'LineString', coordinates: [[LON + dLon(-200), LAT + dLat(north)], [LON + dLon(200), LAT + dLat(north)]] },
+    tags: { highway: 'residential', ...tags },
+  });
+  const here = at(600, 0);
+
+  // Two neighbours of the same class agree on US-NC:urban (35).
+  const agreed = parseArea(
+    {
+      elements: [
+        road(60, 600, { name: 'Blank St' }),
+        road(61, 700, { name: 'Zoned A', mt: 'US-NC:urban' }),
+        road(62, 500, { name: 'Zoned B', mt: 'US-NC:urban' }),
+      ],
+    },
+    syntheticBox
+  );
+  const m = matchRoad(agreed, here.lat, here.lon, 90, 20, 5);
+  assert.equal(m.limit.value, 35, 'takes the local statutory default');
+  assert.equal(m.assumed, true, 'marked as assumed, not surveyed or implied');
+  assert.equal(m.implied, false);
+  assert.equal(m.inferred, false);
+
+  // Neighbours disagree: a zone boundary runs through here, so refuse.
+  const split = parseArea(
+    {
+      elements: [
+        road(63, 600, { name: 'Blank St' }),
+        road(64, 700, { name: 'Zoned A', mt: 'US-NC:urban' }),
+        road(65, 500, { name: 'Zoned B', mt: 'US-NC:rural' }),
+      ],
+    },
+    syntheticBox
+  );
+  assert.equal(matchRoad(split, here.lat, here.lon, 90, 20, 5).limit, null, 'no guess on a boundary');
+
+  // A different road class says nothing about this one.
+  const otherClass = parseArea(
+    {
+      elements: [
+        road(66, 600, { name: 'Blank St' }),
+        road(67, 700, { name: 'Trunk Rd', highway: 'trunk', mt: 'US-NC:rural' }),
+      ],
+    },
+    syntheticBox
+  );
+  assert.equal(matchRoad(otherClass, here.lat, here.lon, 90, 20, 5).limit, null);
+});
+
+test('a zone default does not reach beyond ZONE_NEARBY_M', () => {
+  const road = (id, north, tags) => ({
+    type: 'way', id,
+    geometry: { type: 'LineString', coordinates: [[LON + dLon(-200), LAT + dLat(north)], [LON + dLon(200), LAT + dLat(north)]] },
+    tags: { highway: 'residential', ...tags },
+  });
+  const far = parseArea(
+    {
+      elements: [
+        road(70, 0, { name: 'Blank St' }),
+        road(71, ZONE_NEARBY_M + 200, { name: 'Zoned', mt: 'US-NC:urban' }),
+      ],
+    },
+    syntheticBox
+  );
+  const here = at(0, 0);
+  assert.equal(matchRoad(far, here.lat, here.lon, 90, 20, 5).limit, null, 'too far to speak for here');
 });
 
 test('inheritance does not reach across a distant road', () => {

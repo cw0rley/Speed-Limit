@@ -369,6 +369,7 @@ function LookupStats() {
     ['Limit from OpenStreetMap', pct(stats.osmSeconds)],
     ['  inherited from same road', pct(stats.inferredSeconds || 0)],
     ['  implied by road type', pct(stats.impliedSeconds || 0)],
+    ['  assumed from nearby roads', pct(stats.assumedSeconds || 0)],
     ['Limit from TomTom', pct(stats.tomtomSeconds)],
     ['No limit shown', pct(stats.unknownSeconds)],
     ['Map downloads', `${stats.areaFetches}`],
