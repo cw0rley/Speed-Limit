@@ -20,7 +20,7 @@
 // so "today" is what the app actually achieves, not an optimistic model of it.
 
 import { parseMaxspeed, wayLimit } from '../lookup/maxspeed.js';
-import { parseArea, areaBoxFor, inheritedLimit, areaDefaultLimit } from '../lookup/osmArea.js';
+import { parseArea, areaBoxFor, inheritedLimit, areaDefaultLimit, OVERPASS_ENDPOINTS } from '../lookup/osmArea.js';
 import { zoneLimit, parseZoneLimit } from '../lookup/zoneLimits.js';
 import { haversine } from '../lookup/geo.js';
 
@@ -48,21 +48,44 @@ const bbox = [lat - dLat, lon - dLon, lat + dLat, lon + dLon].map((n) => n.toFix
 
 console.log(`Querying Overpass for a ${(radius * 2) / 1000} km box around ${lat}, ${lon}…`);
 
-const res = await fetch('https://overpass-api.de/api/interpreter', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/x-www-form-urlencoded',
-    'User-Agent': 'speed-limit-coverage-check (github.com/cw0rley/Speed-Limit)',
-  },
-  body: new URLSearchParams({
-    data: `[out:json][timeout:90];\nway["highway"~"^(${DRIVABLE})$"](${bbox});\nout geom;`,
-  }),
-});
-if (!res.ok) {
-  console.error(`Overpass returned ${res.status}. Public servers are often busy — try again.`);
+// The public Overpass servers hand out 502/504 routinely, so work through the
+// same endpoint list the app uses and give each a couple of goes before
+// admitting defeat. Nothing here is urgent, so the waits can be generous.
+const query = `[out:json][timeout:90];\nway["highway"~"^(${DRIVABLE})$"](${bbox});\nout geom;`;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function askOverpass() {
+  let last = 'no endpoints';
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    for (const endpoint of OVERPASS_ENDPOINTS) {
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'speed-limit-coverage-check (github.com/cw0rley/Speed-Limit)',
+          },
+          body: new URLSearchParams({ data: query }),
+        });
+        if (res.ok) return await res.json();
+        last = `${new URL(endpoint).host} returned ${res.status}`;
+      } catch (e) {
+        last = `${new URL(endpoint).host}: ${e.message}`;
+      }
+      console.log(`  ${last}`);
+    }
+    if (attempt < 3) {
+      const wait = attempt * 10;
+      console.log(`  all endpoints busy, waiting ${wait}s…`);
+      await sleep(wait * 1000);
+    }
+  }
+  console.error(`\nOverpass would not answer (${last}). It is usually busy rather than down —`);
+  console.error('wait a few minutes and run this again.');
   process.exit(1);
 }
-const json = await res.json();
+
+const json = await askOverpass();
 
 // Re-shape the raw response the way the app's own Overpass `convert` does, so
 // parseArea sees exactly what it sees in the app.
