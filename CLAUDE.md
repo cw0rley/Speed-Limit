@@ -70,7 +70,10 @@ feeds it fixes from `handleLocation`.
      `--` — the previous road's limit is **never** carried over.
   4. **No road matched** (OSM covers the spot but has no road, or OSM is down) → TomTom per
      ~11 m cell, **only while moving**. While the first area is still downloading, nothing is
-     asked.
+     asked. The answer is **carried forward** (`lastPoint`) for `POINT_VALID_M` (300 m) /
+     `POINT_VALID_MS` (30 s) from where it was asked, and proposed under a key derived from the
+     **value** (`cell:55mph`), not the cell — see the 2026-10-28 note under "Known gaps" for why
+     the old per-cell key meant these answers were almost never displayed.
   - TomTom spacing: ≥ **8 s** between calls (`TOMTOM_MIN_INTERVAL_MS`), but moving onto a road
     we haven't asked about only waits `NEW_ROAD_MIN_MS` (3 s) — 30 s starved the display in town
     (real drive 2026-10: 12–21 calls/day against a 200/day cap, **20 % of moving time blank**).
@@ -403,6 +406,25 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
   only, 5 s of movement, and only when the idle timer was what stopped it — a stop the user or
   the paywall asked for stays off). That was *not* the cause of the blank drive, but it did mean
   the Live Activity was dead for the trip home.
+- **Fixed 2026-10-28 — paid lookups that never reached the screen.** Same drive: **90 of 91
+  TomTom calls answered, but only 8 % of moving time showed a TomTom limit**. The per-cell path
+  (step 4 above) was broken twice over, and only while *moving*:
+  1. `askTomTom` only **stores** the answer; the proposal happens on a later fix that reads
+     `cellTomTom.get(cell)`. Cells are `CELL_PRECISION = 4` ≈ **10 m**, so at 25 mph+ the car is
+     out of that cell before the answer returns and the entry is never read again. The call was
+     paid for and thrown away.
+  2. The proposal key was `c:${cell}`, which changes every ~10 m, so the **2-fix confirmation
+     could never be satisfied** — two consecutive fixes never carried the same key. A point
+     answer could only ever be displayed when it happened to equal what was already shown
+     (`sameLimit` shortcut) or when nothing had ever been shown (`current.key == null`). Worst
+     case: once the 60 s stale rule blanked the display, **nothing on this path could bring it
+     back** for the rest of the drive.
+  Now the most recent answer is kept as `lastPoint` and re-proposed while the car is within
+  300 m / 30 s of where it was asked, under a **value-derived key** so a steady reading holds the
+  display and a changed one still has to agree on two fixes. **The call rate is deliberately
+  unchanged** (a refresh still goes out whenever `TOMTOM_MIN_INTERVAL_MS` allows) so the next
+  drive's stats measure the display fix alone — carrying a point answer further to spend less is
+  a separate decision, and `POINT_VALID_M` is the dial.
 - **No trip history / max-speed recorder.** Would be a ring buffer of `(t, speed, lat, lon)`.
 - **No speed smoothing.** Raw OS speed jitters near zero; a ~1 s EMA would feel nicer.
 - **HERE code is gone** (see history above); it may return only behind verified guardrails. Revoke the old key on the HERE account.

@@ -28,6 +28,7 @@ import {
   REFRESH_MARGIN_M,
 } from './osmArea.js';
 import { fetchTomTomLimit as defaultFetchTomTom } from './tomtom.js';
+import { haversine } from './geo.js';
 
 // Spacing between paid lookups. 30 s starved the display: in town a road
 // changes every 20-40 s, so most roads never got asked and showed "--"
@@ -40,6 +41,12 @@ const NEW_ROAD_MIN_MS = 3 * 1000;
 const WAY_MISS_TTL_MS = 20 * 60 * 1000;
 export const TOMTOM_BACKOFF_MS = 10 * 60 * 1000;
 const TOMTOM_CELL_MISS_TTL_MS = 10 * 60 * 1000;
+// A per-cell answer describes the point it was asked about. Cells are ~10 m, so
+// at road speed the car has left the cell before the answer arrives and it was
+// never read again (2026-10-27: 90 of 91 calls answered, 8 % of display time).
+// Keep the last one and go on using it while the car is still near that point.
+const POINT_VALID_MS = 30 * 1000;
+const POINT_VALID_M = 300; // ~one TomTom spacing interval at highway speed
 const AREA_RETRY_BASE_MS = 15 * 1000;
 const AREA_RETRY_MAX_MS = 2 * 60 * 1000;
 // How long to wait for an in-flight area download before paying TomTom for a
@@ -100,6 +107,7 @@ export function createLimitEngine({
 
   const wayTomTom = new Map(); // `${wayId}:${dir}` -> limit | null
   const cellTomTom = new Map(); // cell -> { limit, until }
+  let lastPoint = null; // { lat, lon, limit, at } — most recent per-point answer
   let tomtomBusy = false;
   let tomtomNextAt = 0;
 
@@ -294,18 +302,44 @@ export function createLimitEngine({
     return `${fix.lat.toFixed(CELL_PRECISION)},${fix.lon.toFixed(CELL_PRECISION)}`;
   }
 
+  // A point answer still applies if we have not gone far from where it was
+  // asked about, and it has not gone stale.
+  function pointApplies(fix) {
+    return (
+      lastPoint != null &&
+      now() - lastPoint.at < POINT_VALID_MS &&
+      haversine(fix.lat, fix.lon, lastPoint.lat, lastPoint.lon) < POINT_VALID_M
+    );
+  }
+
+  // Keyed by the value, not the cell: successive point answers are independent
+  // readings of the same thing, so the same value keeps the display steady
+  // while a changed one still has to agree on two fixes. The old `c:${cell}`
+  // key changed every ~10 m, so a point answer could only ever be shown when it
+  // happened to match what was already up — and once the stale rule blanked the
+  // display, nothing on this path could bring it back.
+  const pointKey = (limit) => `cell:${limit ? `${limit.value}${limit.unit}` : 'none'}`;
+
   // No OSM road for this fix: per-cell TomTom (device cache only).
   function resolveByCell(fix) {
     const cell = cellKey(fix);
     const cached = cellTomTom.get(cell);
     if (cached && (cached.limit || now() < cached.until)) {
-      propose(`c:${cell}`, cached.limit);
+      lastPoint = { lat: fix.lat, lon: fix.lon, limit: cached.limit, at: now() };
+      propose(pointKey(cached.limit), cached.limit);
       return;
     }
+    // Show the most recent point answer while it still applies. A refresh may
+    // still go out below when the spacing allows one — this keeps the display
+    // populated between calls without changing how often we pay for them.
+    if (pointApplies(fix)) propose(pointKey(lastPoint.limit), lastPoint.limit);
     if (tomtomAllowed(fix, { movingOnly: true })) {
-      askTomTom(fix, (limit) =>
-        boundedSet(cellTomTom, cell, { limit, until: now() + TOMTOM_CELL_MISS_TTL_MS })
-      );
+      askTomTom(fix, (limit) => {
+        boundedSet(cellTomTom, cell, { limit, until: now() + TOMTOM_CELL_MISS_TTL_MS });
+        // Filed against where the call was made, which is where the answer is
+        // true — the next fix picks it up from here.
+        lastPoint = { lat: fix.lat, lon: fix.lon, limit, at: now() };
+      });
     }
     // Unknown for now: keep what's shown (stale rule clears it eventually).
   }

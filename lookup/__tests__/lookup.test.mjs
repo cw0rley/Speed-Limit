@@ -180,6 +180,27 @@ test("engine: never carries the previous road's limit onto an unknown road", asy
   assert.equal(h.calls.tomtom, 2, 'retries after the backoff');
 });
 
+// Drive of 2026-10-26: 90 of 91 TomTom calls answered, but only 8% of moving
+// time showed a TomTom limit. Per-cell answers were filed under the ~10 m cell
+// the call was made in — at road speed the car is out of that cell before the
+// answer arrives, so it was never read — and the proposal key changed every
+// cell, so the 2-fix confirmation could never be met either.
+test('engine: a per-point TomTom answer reaches the screen at road speed', async () => {
+  let answer = { status: 'hit', limit: { value: 25, unit: 'mph', source: 'tomtom' } };
+  const h = harness({ areaOk: false, tomtom: () => answer });
+
+  // OSM is down, so every fix falls through to a point lookup. 15 m per fix
+  // means a different ~10 m cell every time.
+  for (let i = 0; i < 6; i++) await h.drive(0, i * 15, 90, 15);
+  assert.equal(h.engine.getCurrent()?.value, 25, 'the answer is actually shown');
+  assert.deepEqual(h.shown, ['25 mph tomtom'], 'shown once, no flicker');
+
+  // A later answer with a different value takes over (two fixes to agree).
+  answer = { status: 'hit', limit: { value: 45, unit: 'mph', source: 'tomtom' } };
+  for (let i = 6; i < 26; i++) await h.drive(0, i * 15, 90, 15);
+  assert.equal(h.engine.getCurrent()?.value, 45, 'a changed limit takes effect');
+});
+
 test('engine: needs 2 consecutive fixes before switching roads', async () => {
   const h = harness();
   await h.drive(0, -200, 90);
