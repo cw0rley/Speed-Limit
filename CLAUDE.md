@@ -425,6 +425,31 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
   unchanged** (a refresh still goes out whenever `TOMTOM_MIN_INTERVAL_MS` allows) so the next
   drive's stats measure the display fix alone — carrying a point answer further to spend less is
   a separate decision, and `POINT_VALID_M` is the dial.
+- **Raising OSM-only coverage (opened 2026-10-28).** A production build never calls TomTom
+  (`lookup/tomtom.js`: no test token and no app user id → `backoff`), so **a free store release
+  is OSM-only**. On the 2026-10-26 drive that would have been 44 % of moving time (OSM 42 % +
+  inherited 2 %). Three levers, none needing a paid call or a licensing answer. Measure before
+  building: `node --no-warnings tools/osm-coverage.mjs <lat> <lon> [radius]` reports each one
+  **length-weighted** (what you actually drive) for a real area.
+  - **A — inherit from the nearest tagged piece, not by unanimity.** `inferRoadLimits` drops a
+    road's key entirely if any two tagged pieces disagree. A road long enough to legitimately
+    step from 45 to 55 therefore teaches the app **nothing along its whole length** — and those
+    are the roads you spend the most time on. Inheriting from the nearest tagged piece of the
+    same `roadKey` (with a tight distance cap, and ideally shared-node connectivity rather than
+    raw distance — note the Overpass `convert` currently drops node ids) fixes the case the
+    current rule was built for. Biggest expected win, no new data.
+  - **B — statutory-default tags.** `maxspeed:type` / `source:maxspeed` / `zone:maxspeed` say
+    "the limit here is the statutory default", which is the real legal limit even unposted. The
+    `convert` in `buildAreaQuery` **does not download them**, so step one is adding them to the
+    query; then a value → number table (`US-NC:urban` etc.) for whatever values the tool reports
+    as actually present.
+  - **C — per-class defaults** (e.g. all `residential` → 25 mph). Biggest coverage, biggest
+    accuracy risk, and statutes vary by state (NC's unposted municipal default is 35, not 25).
+    Only worth it if the tool shows a class dominating the remaining blank length. Do last, if
+    at all.
+  - The tool also prints `maxspeed` values `parseMaxspeed` rejects. If something common shows up
+    there (`signals`, `variable`, conditional forms), that is a cheaper and safer fix than any
+    of the levers.
 - **No trip history / max-speed recorder.** Would be a ring buffer of `(t, speed, lat, lon)`.
 - **No speed smoothing.** Raw OS speed jitters near zero; a ~1 s EMA would feel nicer.
 - **HERE code is gone** (see history above); it may return only behind verified guardrails. Revoke the old key on the HERE account.
@@ -464,6 +489,7 @@ speed-limit/
   brand-kit/             # icon/splash source SVGs + generate.js
   carplay-signs/         # pre-rendered sign PNGs (retired Grid-template approach)
   generate-*.js          # asset/screenshot/sign generators (use sharp)
+  tools/osm-coverage.mjs # measures free (OSM-only) coverage for a real area; see "Known gaps"
   privacy-policy.html
   docs/ROADMAP.md        # v2 plan: TomTom fallback, subscription, CarPlay Live Activity
   docs/STORE-SETUP.md    # Apple + RevenueCat setup steps for the owner
