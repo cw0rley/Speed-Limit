@@ -4,11 +4,12 @@ A cross-platform (iOS + Android) React Native + Expo app that shows the driver's
 speed alongside the posted speed limit for the road they're on. Ships to the App Store and
 Play Store; also targets **CarPlay** (full-screen custom sign) on iOS.
 
-> **v2 direction (decided 2026-09-16) — see [`docs/ROADMAP.md`](docs/ROADMAP.md):** evolve this
-> app (upgrade to Expo SDK 56+), replace HERE with **OSM first + TomTom Reverse Geocode fallback**
-> via the Worker, make it **subscription-only** (RevenueCat), and ship a **CarPlay Live Activity**
-> (no entitlement needed) instead of relying on the full-screen `MapTemplate`. This file still
-> describes the app *as it is today*; update it as roadmap phases land.
+> **v2 direction — see [`docs/ROADMAP.md`](docs/ROADMAP.md):** evolve this app (upgrade to Expo
+> SDK 56+), replace HERE with **OSM first + TomTom fallback** via the Worker, and ship a
+> **CarPlay Live Activity** (no entitlement needed) instead of the full-screen `MapTemplate`.
+> **The app stays FREE: no ads, no subscription (decided 2026-11-13, superseding the
+> subscription-only plan of 2026-09-17).** A store build is therefore **OSM-only** — it never
+> calls TomTom. This file describes the app *as it is today*; update it as phases land.
 
 > **Orient here first.** This file is the source of truth for how the app is wired. The root
 > `README.md` is the short user-facing version (rewritten 2026-09-26 to match).
@@ -215,11 +216,20 @@ with a payment method, and its Base plan has no provider-side hard stop (alert e
 fails the no-billing guardrails. TomTom is the provider being pursued. The old
 `HERE_API_KEY` Worker secret can be deleted; the key itself should be revoked on the HERE account.
 
-## Subscription (`subscription/`) — RevenueCat
+## Subscription (`subscription/`) — RevenueCat — **PARKED, NOT SHIPPING**
 
-Decided 2026-09-17: **subscription only**, **$2.99/month and $24.99/year**, **7-day free trial**
-(pending final confirmation), **existing free users do not keep free access**. Rollout: first a
-**notice** release (banner + early trial), then the **required** release (paywall).
+**Decided 2026-11-13: the app stays free, with no ads and no subscription.** This supersedes the
+2026-09-17 decision below. Nothing here runs: `app.json` has `subscription.mode = "off"`, so
+`store.js` reports `disabled` and the paywall never shows.
+
+**The code is kept deliberately, not abandoned.** It is built and unit-tested, and a future "Pro
+unlock for TomTom coverage" — the only revenue shape that still makes sense if the app ever needs
+to pay for data — would want most of it. Do not delete it; do not switch `mode` on without a
+decision to charge.
+
+The superseded plan, for reference: **subscription only**, **$2.99/month and $24.99/year**,
+**7-day free trial**, **existing free users do not keep free access**; a **notice** release
+(banner + early trial) then the **required** release (paywall).
 
 - **Config lives in `app.json` → `expo.extra.subscription`** (read by `subscription/config.js`):
   `mode` = `off` | `notice` | `required`, `startDate` (`YYYY-MM-DD`, shown in the notice),
@@ -513,6 +523,22 @@ Assets referenced by `app.json` (`assets/icon.png`, `splash.png`, `adaptive-icon
   - The tool also prints `maxspeed` values `parseMaxspeed` rejects. If something common shows up
     there (`signals`, `variable`, conditional forms), that is a cheaper and safer fix than any
     of the levers.
+- **FREE, no ads, no subscription (decided 2026-11-13).** Ads were considered and rejected: in a
+  driving app there is nowhere safe to put one (not the main screen, not CarPlay, not the Live
+  Activity), and at ~$0.50–0.80/user/month they could not fund TomTom at ~$1.75/user/month
+  anyway — they would buy a worse product, not a better one. Consequences:
+  - **Unblocked:** Apple Paid Apps Agreement, subscription products, RevenueCat, App Review's
+    subscription scrutiny, and the problem of taking access away from existing free users. None
+    of it is needed to ship.
+  - **TomTom licensing is off the critical path.** A store build never calls TomTom, so the
+    unanswered sales questions only govern the owner's own `testflight` builds (evaluation use).
+    Still worth an answer; no longer blocking a release.
+  - **New top risk: Overpass at scale.** The app reads the public, donated Overpass servers.
+    Fine now, not fine at a few thousand users — their usage policy does not cover it and you
+    get throttled (502s already seen). Before real growth this needs a self-hosted OSM extract
+    or a vector-tile source. **This cost exists with or without revenue** and is the only
+    remaining argument for ever charging.
+  - `subscription/` stays in the tree, switched off. See that section.
 - **No trip history / max-speed recorder.** Would be a ring buffer of `(t, speed, lat, lon)`.
 - **No speed smoothing.** Raw OS speed jitters near zero; a ~1 s EMA would feel nicer.
 - **HERE code is gone** (see history above); it may return only behind verified guardrails. Revoke the old key on the HERE account.

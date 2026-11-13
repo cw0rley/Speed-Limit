@@ -1,12 +1,12 @@
 # Speed Limit — plan (v2)
 
-_Last updated 2026-10-02. Decisions and research notes are at the bottom._
+_Last updated 2026-11-13. Decisions and research notes are at the bottom._
 
 ## What we're building
 
 The app shows your current speed and the posted limit for the road you're on, on the phone and —
-on iPhone — as a live tile on the **CarPlay Dashboard** and Lock Screen. It is becoming a **paid
-subscription** ($2.99/month, $24.99/year, 7-day free trial, no free tier).
+on iPhone — as a live tile on the **CarPlay Dashboard** and Lock Screen. It is **free, with no
+ads and no subscription** (decided 2026-11-13; see Decisions).
 
 The whole project exists because two things broke: **HERE billed ~$1,000** unexpectedly (so it was
 switched off, leaving the store app barely able to find limits), and **Apple refused** the CarPlay
@@ -28,16 +28,32 @@ Navigation entitlement (so the full-screen CarPlay sign is impossible).
 
 ## Money
 
-| | |
-|---|---|
-| Price | $2.99/month, $24.99/year, 7-day free trial |
-| Store fee | 15% (Small Business Program / Play) |
-| Data cost | TomTom free: 20,000 reverse-geocode + 2,500 snap per month, account-wide |
-| Measured | One real drive (2026-09-22, before the savings work) used **116 lookups** |
-| Risk | At that rate, ~3,500/user/month ≈ **$1.75/user/month** if paid — too close to the price |
+**There is none, and that is the decision.** Free, no ads, no subscription.
 
-The savings work (steps 1–2 above) is meant to cut that a lot; **the next drive's numbers decide
-whether the price works.**
+Why, in short:
+
+- **Ads cannot fund the paid data source.** A banner in a driving app is worth roughly
+  $0.50–0.80/user/month at best, against ~$1.75/user/month for TomTom at the measured call rate.
+  They would buy a worse product, not a better one.
+- **Ads have nowhere safe to go** in an app you look at while driving — not the main screen, not
+  CarPlay, not the Live Activity — and Apple reviews driver distraction closely.
+- **Free deletes the whole blocked list**: the TomTom licensing answer, the Paid Apps Agreement,
+  RevenueCat, App Review's subscription scrutiny, and taking access away from existing users.
+- **OSM turned out to be good enough to try.** 73 % of road length around Clayton NC carries a
+  maxspeed tag — not the ~11 % this project had assumed from a mis-counted NJ sample.
+
+**What a free release costs to run: nothing per user.** A production build never calls TomTom
+(`lookup/tomtom.js` refuses without a token or subscriber id), so the store app is OSM-only.
+
+**The one real cost is Overpass.** The app reads the public, donated Overpass servers. That is
+fine at today's scale and is *not* fine at a few thousand users — their usage policy does not
+cover it, and you would be throttled (you already see 502s). Before any real growth that means
+self-hosting an OSM extract or switching to a vector-tile source. **That cost exists whether or
+not the app charges**, and it is the only argument left for ever having revenue.
+
+**Subscription code stays in the tree, switched off** (`subscription.mode = "off"`). It is built
+and unit-tested; parking it costs nothing and deleting it would throw away work that a future
+"Pro unlock for TomTom coverage" would want.
 
 ## Never-billed-again rules
 
@@ -58,53 +74,54 @@ whether the price works.**
 - CarPlay Live Activity (Dashboard + Lock Screen + Dynamic Island), drive mode with idle stop
 - CarPlay text screen (Driving Task entitlement, which Apple did grant)
 - Fixes for the "stuck on 55" and frozen-screen bugs, with regression tests
-- Paywall, "becoming a subscription" banner, Settings subscription section — **switched off**
-- Worker can serve only active subscribers (RevenueCat), fails closed
+- Paywall, "becoming a subscription" banner, Settings subscription section — **parked, off**
+- Worker can serve only active subscribers (RevenueCat), fails closed — **parked, unused**
+- Android Auto manifest entry removed (the Play policy pull of 2026-08-20)
+- OSM coverage levers: inherit from nearest piece, statutory-default tags, nearby-zone defaults
+- `tools/osm-coverage.mjs`, which measures all of the above on a real area
 - Privacy policy rewritten; unused background mode removed; README rewritten
 - 36 automated tests
 
 **Waiting on you**
-- Submit + drive **build 30**, then send Lookup stats
-- Store setup: Apple agreements, 2 subscription products, RevenueCat account ([STORE-SETUP.md](STORE-SETUP.md))
-- Decisions: keep the Live Activity? privacy policy URL? subscription start date? confirm 7-day trial
+- Drive **build 32** and send Lookup stats — it still went blank for a long stretch on 2026-11-05
+- Build the Android bundle and upload it to **every** Play track (the listing is still rolled back)
+- Verify `US-NC:urban` (35) / `US-NC:rural` (55) in `lookup/zoneLimits.js` against statute
 - Old HERE account: delete the key, remove the card
 
-**Waiting on TomTom** (sales form, 2026-09-28)
-- Commercial use on the free/prepaid plan
-- **CarPlay** ("Automotive Usage" exclusion) — the one that matters
-- On-device caching duration
-- Prepaid hard cap confirmation
+**No longer blocking** (free release)
+- Apple Paid Apps Agreement, subscription products, RevenueCat — not needed
+- TomTom licensing: store builds never call TomTom, so the sales answer only governs **your own
+  test builds**, which are evaluation use. Worth having, no longer on the critical path.
 
 ## Plan from here
 
-### Step 1 — Prove the accuracy and the cost (needs a drive)
-Drive build 30; read Lookup stats. Expect far fewer TomTom calls and limits on highways.
-If a road type is still blank, that's the next fix.
+### Step 1 — Make the limit stay on screen (blocking)
+Build 32 still went blank for a long stretch. Read the Lookup stats, in particular **Map
+downloads / failed / timed out** — the `areaStore` fix made the device cache stricter, so the
+engine leans harder on Overpass, and Overpass is flaky. Likely next fix: hold the stale box in
+memory while a download retries, instead of showing nothing.
 
-### Step 2 — Store setup (parallel, needs you)
-Apple agreements, products, RevenueCat. Nothing here depends on TomTom.
+### Step 2 — Un-pull the Play listing
+Build the Android bundle and upload to every track. Independent of everything else, and it is the
+only thing currently broken for real users.
 
-### Step 3 — Decide the CarPlay question
-- TomTom says CarPlay is fine → ship everything.
-- TomTom says no → ship **phone-only** (no CarPlay tile), or keep CarPlay on OSM-only data.
-- No answer in ~2 weeks → treat as "no" and pick one of the above.
+### Step 3 — Ship the free release
+Phone + CarPlay Live Activity, OSM-only. No store agreements needed, no provider answer needed.
 
-### Step 4 — Notice release
-`subscription.mode = "notice"`: app still free, a banner announces the date, the trial can be
-started early. Release notes explain it. ~2 weeks before the switch.
+### Step 4 — Watch Overpass
+If installs grow, the public servers will throttle. Plan a self-hosted extract or a vector-tile
+source before that bites.
 
-### Step 5 — Paywall release
-`mode = "required"`, Worker switched to subscribers-only. Watch usage and cost daily for the
-first weeks.
-
-### Step 6 — After launch
+### Step 5 — After launch
 Expo SDK upgrade, Android drive mode, trip history, speed smoothing, splitting `App.js` further.
+Revisit paid only if there is real usage, and then as a one-off "Pro" unlock for TomTom coverage
+rather than ads or a mandatory subscription.
 
 ## Decisions (2026-09-16 → 09-28)
 
 - **Evolve the existing app** (same bundle id, same store listings); SDK upgrade deferred to after launch.
-- **Subscription only**; existing free users do **not** keep free access (softened by the notice release + trial).
-- **$2.99 / $24.99 / 7-day trial.**
+- ~~**Subscription only**, $2.99 / $24.99 / 7-day trial, existing free users lose free access.~~
+  **Superseded 2026-11-13: free, no ads, no subscription.** See Money above. The code stays, off.
 - **OSM first, TomTom fallback.** HERE **ruled out** (no card-free hard stop; even contacting them needs a card).
 - **CarPlay via Live Activity** — Apple refused the Navigation entitlement; Driving Task was granted.
 - **Google Play can't convert a free app to paid**, hence in-app subscription.
@@ -112,6 +129,8 @@ Expo SDK upgrade, Android drive mode, trip history, speed smoothing, splitting `
 
 ## Open questions
 
-1. Android: any equivalent of the CarPlay tile (an ongoing notification)?
-2. Is OSM + TomTom coverage good enough on the roads you actually drive?
-3. Does the price clear the data cost once the savings work is measured?
+1. Why does the limit still drop out for long stretches on build 32?
+2. Is OSM-only coverage good enough to be worth shipping? (73 % of road length by the map; the
+   drive will say what that feels like.)
+3. At what install count does Overpass throttle us, and what replaces it?
+4. Android: any equivalent of the CarPlay tile (an ongoing notification)?
